@@ -2,6 +2,9 @@
 
 Download entire YouTube Music albums as MP3s with one command.
 
+> **Android app included** — see [`android/`](android/README.md): paste a link on
+> your phone and get MP3s (YouTube, SoundCloud and Spotify links supported).
+
 ## Installation
 
 Clone the repo and `cd` into it:
@@ -143,3 +146,10 @@ If bot detection persists, you can pass YouTube cookies:
 - Artist names are cleaned automatically (removes "- Topic", "- Album" suffixes)
 - Linux and Windows are supported (tested)
 - macOS should work but is untested
+
+## Credits
+
+- Original CLI: [Karataso/albumdown](https://github.com/Karataso/albumdown) by [Karataso](https://github.com/Karataso)
+- Android app (`android/`): by [Shadow1987-oss](https://github.com/Shadow1987-oss) — direct port of
+  the CLI's behavior (same folder layout, cleaning rules and tagging). GPL-3.0
+  (it bundles [youtubedl-android](https://github.com/JunkFood02/youtubedl-android)).
