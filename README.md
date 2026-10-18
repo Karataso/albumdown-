@@ -10,8 +10,8 @@ Download entire YouTube Music albums as MP3s with one command.
 Clone the repo and `cd` into it:
 
 ```bash
-git clone https://github.com/Karataso/albumdown.git
-cd albumdown
+git clone https://github.com/Shadow1987-oss/albumdown-.git
+cd albumdown-
 ```
 
 **Linux:**
