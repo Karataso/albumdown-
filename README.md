@@ -1,155 +1,107 @@
-# albumdown
+# AlbumDown
 
-Download entire YouTube Music albums as MP3s with one command.
+Download whole albums as MP3s, on your phone.
 
-> **Android app included** — see [`android/`](android/README.md): paste a link on
-> your phone and get MP3s (YouTube, SoundCloud and Spotify links supported).
+Paste a link (or just **Share → AlbumDown** from any app) → preview the
+tracklist → pick the tracks you want → get tagged MP3s with cover art in
+`Music/AlbumDown/Artist/Album/`.
 
-## Installation
+Android app written in Kotlin + Jetpack Compose. It bundles **yt-dlp, Python
+and ffmpeg** on-device, so everything happens locally — no server, no account,
+no ads.
 
-Clone the repo and `cd` into it:
+> Not on Play Store. Build the APK yourself (see [Build](#build)).
 
-```bash
-git clone https://github.com/Shadow1987-oss/albumdown-.git
-cd albumdown-
-```
+## Supported links
 
-**Linux:**
-```bash
-./albumdown "https://music.youtube.com/playlist?list=PLxxxxx"
-```
-
-**Windows:**
-```bash
-python albumdown "https://music.youtube.com/playlist?list=PLxxxxx"
-```
-
-**macOS:**
-```bash
-./albumdown "https://music.youtube.com/playlist?list=PLxxxxx"
-```
-> *Should work — same as Linux — but hasn't been tested on a real Mac.*
-
-That's it. First run automatically installs dependencies into a local `.venv/` — nothing global gets touched.
-
-> **Note:** ffmpeg must be installed (used for MP3 conversion).
-> - Arch: `sudo pacman -S ffmpeg`
-> - Debian/Ubuntu: `sudo apt install ffmpeg`
-> - Windows: [ffmpeg.org/download](https://ffmpeg.org/download.html)
-
-## Usage
-
-```bash
-# Basic — downloads to ~/Music/
-./albumdown "https://music.youtube.com/playlist?list=PLxxxxx"
-
-# Custom output directory
-./albumdown "https://music.youtube.com/playlist?list=PLxxxxx" -o ~/Downloads
-
-# Skip the confirmation prompt
-./albumdown "https://music.youtube.com/playlist?list=PLxxxxx" --no-confirm
-
-# Set MP3 quality (0=best, 10=worst, default: 0)
-./albumdown "https://music.youtube.com/playlist?list=PLxxxxx" --quality 3
-```
+| Source | What works |
+|--------|-----------|
+| YouTube / YouTube Music | playlists, albums, single videos (treated as a 1-track album) |
+| SoundCloud | sets and single tracks |
+| Spotify | albums, playlists, tracks — tracklist read from Spotify's public embed page, audio then searched on YouTube (Spotify audio itself is DRM'd) |
+| Direct audio | `.mp3` `.m4a` `.ogg` `.opus` `.wav` `.flac` URLs |
 
 ## What it does
 
-1. You give it a YouTube Music (or YouTube) playlist URL
-2. It fetches the tracklist and shows you what's in it
-3. You confirm
-4. It downloads every track as MP3 with embedded metadata into:
-   ```
-   ~/Music/
-   └── Artist Name/
-       └── Album Name/
-           ├── 01. First Song.mp3
-           ├── 02. Second Song.mp3
-           └── ...
-   ```
+- **Tagged MP3s.** Title, artist, album and track number are embedded in a
+  single ffmpeg pass (no extra ID3 libraries).
+- **Album cover art** embedded for the whole album — the album's own artwork,
+  not per-video thumbnails. WebP/AVIF get converted to JPEG first.
+- **Same layout and naming rules as the original CLI**: artist names cleaned
+  (`- Topic`, `- Album`, `- VEVO` suffixes removed), playlist titles cleaned
+  (`Album - X` → `X`), file names sanitized, artist capitalization unified
+  across tracks, track numbers from playlist order.
+- **Already-downloaded tracks are skipped** — re-running is safe.
+- **Runs in the background** as a foreground service with progress
+  notification, so a long album survives you leaving the app. Cancel kills the
+  in-flight yt-dlp process immediately.
+- **WiFi-only mode** (⚙) — downloads wait for WiFi.
+- **yt-dlp self-updates** once a week before each download (respecting the
+  WiFi-only setting), plus a manual *Update* button with the current version
+  in ⚙. Extractor updates matter: this is what keeps YouTube working.
+- Works on Android 8.0+ (API 26), arm64 + arm32.
 
-Each MP3 file has ID3 tags embedded: title, artist, album, and track number.
+## Where your files go
 
-Track numbers come from the playlist order (YouTube Music stores albums as playlists — playlist position *is* the track number), and the folder/artist/album names come from each song's own metadata tags, so names are clean (e.g. `Lámina Once` instead of the raw playlist title `Album - Lámina Once`).
-
-## Options
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-o, --output DIR` | Output directory | `~/Music` |
-| `--quality N` | MP3 quality (0=best, 10=worst) | `0` |
-| `--no-confirm` | Skip the yes/no prompt | off |
-| `--safe` | Slower, gentler downloads (see below) | off |
-| `--cookies FILE` | Use a cookies.txt for authenticated downloads | none |
-| `--lyrics` | Fetch and archive lyrics (see below) | off |
-| `--no-art` | Skip embedding album cover art | off |
-| `-h, --help` | Show help | — |
-
-## Cover Art
-
-On by default. The **album's own cover** (from the playlist) is downloaded once and embedded into every MP3 — one clean, consistent cover for the whole album instead of screwey per-video thumbnails with text overlays. Per-video thumbnails are only used as a last resort if the album has no art.
-
-Disable with `--no-art`. Works as a backfill too: run it on an already-downloaded album and it only adds art to files missing it.
-
-## Lyrics
-
-```bash
-./albumdown "URL" --lyrics
+```
+Music/AlbumDown/
+└── Artist Name/
+    └── Album Name/
+        ├── 01. First Song.mp3
+        ├── 02. Second Song.mp3
+        └── ...
 ```
 
-Fetches lyrics from [LRCLIB](https://lrclib.net) (free, no API key) and archives them two ways:
+Written through MediaStore with scoped storage (no `WRITE_EXTERNAL_STORAGE`),
+so it shows up in any music player right away.
 
-- `01. Song Title.lrc` — sidecar file with synced timestamps (read by mpv, foobar2000, most Android players)
-- Lyrics embedded in the MP3's ID3 tags (shows in any player's lyrics view)
+## Build
 
-Matching is duration- and artist-aware to avoid attaching wrong-song lyrics. You can also run it on an album you've already downloaded — it backfills missing lyrics without re-downloading anything.
+1. Open `android/` in Android Studio.
+2. Install SDK 35 when it asks. JDK 17+ (the JBR bundled with Studio is fine).
+3. `Run` on a **physical device** — yt-dlp/ffmpeg are pointless on an x86
+   emulator — or `Build > Generate Signed Bundle/APK` (ABI splits:
+   `arm64-v8a` + `armeabi-v7a`, no x86).
 
-> Why not Musixmatch? Their free API tier only returns 30% lyric snippets; full lyrics require a paid license. LRCLIB is free and complete.
+Release signing: `android/keystore.properties` + `android/keystore/`
+(not committed). Without them a release build still compiles, just unsigned.
 
-### Players that show the lyrics
-
-- **Quod Libet** (`quodlibet`) — enable the *Display lyrics* plugin: shows embedded lyrics in a panel next to the song
-- **Strawberry** — shows embedded plain lyrics
-- **mpv + [mpv-lrc](https://github.com/guidocella/mpv-lrc)** — displays the `.lrc` files as a synced overlay that follows playback
-
-## Safe Mode
-
-If you're getting "Sign in to confirm you're not a bot" or 403 errors, YouTube is flagging your requests. Use `--safe`:
+### Tests
 
 ```bash
-./albumdown "URL" --safe
+cd android && ./gradlew :app:testDebugUnitTest
 ```
 
-This adds aggressive delays:
-- 3 seconds between metadata requests
-- Random 5–15 second pause before each download
-- Random 6–12 second wait between tracks (with a visible countdown)
-- Fewer retries (fewer requests = less suspicion)
-
-Slower, but much less likely to trip bot detection.
-
-## Cookies (authenticated downloads)
-
-If bot detection persists, you can pass YouTube cookies:
-
-```bash
-./albumdown "URL" --cookies cookies.txt
-```
-
-> ⚠️ **Warning:** Cookies tie downloads to a Google account. YouTube can temporarily restrict accounts that download heavily. Use a **throwaway account**, never your main one. Export cookies from a private/incognito window using a cookies.txt extension, then close the window.
+Pure JVM unit tests — no emulator needed.
 
 ## Notes
 
-- Files already downloaded are skipped (safe to re-run)
-- Failed tracks are reported at the end
-- Works with both `youtube.com` and `music.youtube.com` playlist URLs
-- Artist names are cleaned automatically (removes "- Topic", "- Album" suffixes)
-- Linux and Windows are supported (tested)
-- macOS should work but is untested
+- ffmpeg is provided by `dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.9` —
+  the original `com.arthenica` artifact was pulled from Maven Central in April
+  2025. That fork is a drop-in (same `com.arthenica.ffmpegkit` package).
+- Spotify resolution scrapes the public embed page: no credentials, but
+  deliberately fragile — if Spotify changes the page, it breaks.
+- The UI is currently **Spanish only** (v0.1). Translations welcome.
+- Development notes in Spanish: [`android/README.md`](android/README.md).
+
+## Roadmap
+
+- v0.2: polish, translations, whatever breaks first on new YouTube responses
+- v0.3+: lyrics and cookies, only if they actually hurt
 
 ## Credits
 
-- Original CLI: [Karataso/albumdown](https://github.com/Karataso/albumdown) by [Karataso](https://github.com/Karataso)
-- Android app (`android/`): by [Shadow1987-oss](https://github.com/Shadow1987-oss) — direct port of
-  the CLI's behavior (same folder layout, cleaning rules and tagging). GPL-3.0
-  (it bundles [youtubedl-android](https://github.com/JunkFood02/youtubedl-android)).
+- **Original `albumdown` CLI**: [Karataso/albumdown](https://github.com/Karataso/albumdown)
+  by [Karataso](https://github.com/Karataso). This app is a full rewrite of
+  that tool in Kotlin — different language, different runtime, but the same
+  behavior: folder layout, cleaning rules, tagging and cover handling are ports
+  of the Python original (`cleanArtist`, `sanitize`, artist-case unification,
+  cover selection… all say so in the source).
+- **Android app (`android/`)**: by [Shadow1987-oss](https://github.com/Shadow1987-oss).
+- Bundles [youtubedl-android](https://github.com/JunkFood02/youtubedl-android)
+  (yt-dlp + Python runtime) and `ffmpeg-kit`.
+
+## License
+
+[GPL-3.0](LICENSE) — required by `youtubedl-android`, so the whole app is
+GPL-3.0.
