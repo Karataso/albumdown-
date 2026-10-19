@@ -1,5 +1,11 @@
 package com.albumdown.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +58,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,8 +86,9 @@ import kotlinx.coroutines.launch
 fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
     val ctx = LocalContext.current
     val state by vm.state.collectAsState()
-    var url by remember { mutableStateOf(shared ?: "") }
-    var showSettings by remember { mutableStateOf(false) }
+    // rememberSaveable: si no, girar el celu borra el link pegado.
+    var url by rememberSaveable { mutableStateOf(shared ?: "") }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val kind = classifyUrl(url.trim())
 
@@ -350,18 +358,23 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 textAlign = TextAlign.Center,
                             )
                             Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { openAlbumFolder(ctx) }
+                                    .padding(vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Icon(
-                                    Icons.Rounded.FolderOpen, contentDescription = null,
+                                    Icons.Rounded.FolderOpen, contentDescription = "Abrir carpeta",
                                     modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = MaterialTheme.colorScheme.primary,
                                 )
                                 Text(
                                     "Music/AlbumDown/",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = MaterialTheme.colorScheme.primary,
                                 )
                             }
                         }
@@ -460,4 +473,25 @@ private fun SettingsDialog(vm: DownloadViewModel, onClose: () -> Unit) {
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Listo") } },
     )
+}
+
+/**
+ * Abre Music/AlbumDown en el gestor de archivos. DocumentsUI identifica la carpeta
+ * por el documentId "primary:<ruta>"; si ningún gestor lo agarra (ROMs chinas sin
+ * DocumentsUI), fallback al listado de audio del MediaStore.
+ */
+private fun openAlbumFolder(ctx: Context) {
+    val rel = "${Environment.DIRECTORY_MUSIC}/AlbumDown"
+    val doc = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:$rel")
+    val attempts = listOf(
+        Intent(Intent.ACTION_VIEW).setDataAndType(doc, "vnd.android.document/directory"),
+        Intent(Intent.ACTION_VIEW).setDataAndType(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio/*"),
+    )
+    for (i in attempts) {
+        try {
+            ctx.startActivity(i)
+            return
+        } catch (_: ActivityNotFoundException) {
+        }
+    }
 }
