@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
@@ -52,6 +53,8 @@ class DownloadViewModel : ViewModel() {
                         UiState.Error("No se pudo leer el álbum")
                     else -> UiState.Preview(album, t)
                 }
+            } catch (e: DlError) {
+                _state.value = UiState.Error(failureUserMessage(e.kind))
             } catch (e: Exception) {
                 _state.value = UiState.Error("Error: ${(e.message ?: "desconocido").take(120)}")
             }
@@ -72,7 +75,11 @@ class DownloadViewModel : ViewModel() {
             .setInputData(workDataOf("url" to url, "indices" to indices.joinToString(",")))
             .build()
         lastWorkId = req.id
-        WorkManager.getInstance(app).enqueue(req)
+        // Única cola: dos álbumes a la vez chocan en caché (__art__.jpg, __tmp_N__ son
+        // nombres fijos). APPEND_OR_REPLACE = si el anterior falló se limpia la cola,
+        // si está corriendo, el nuevo espera su turno.
+        WorkManager.getInstance(app)
+            .enqueueUniqueWork("album-down", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
         observe(app, req.id, album.name, indices.size)
     }
 
@@ -85,6 +92,11 @@ class DownloadViewModel : ViewModel() {
             WorkManager.getInstance(app).getWorkInfoByIdFlow(id).collect { info ->
                 if (info == null) return@collect
                 when (info.state) {
+                    // Cola (unique work): todavía no arrancó — se muestra como "en cola"
+                    // en vez de dejar la pantalla clavada en el preview.
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> _state.value = UiState.Downloading(
+                        0, total, "En cola…", albumName,
+                    )
                     WorkInfo.State.RUNNING -> {
                         val p = info.progress
                         _state.value = UiState.Downloading(

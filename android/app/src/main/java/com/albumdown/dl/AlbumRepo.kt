@@ -90,9 +90,11 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
     req.addOption("--print", "%(title)s\t%(uploader)s\t%(album)s\t%(artist)s\t%(webpage_url)s\t%(duration)s\t%(thumbnail)s")
     val out = try {
         // processId no-nulo + callback vacío: evita NPEs dentro de la lib.
-        YoutubeDL.getInstance().execute(req, "resolve") { _, _, _ -> }?.out.orEmpty()
-    } catch (_: Exception) {
-        return null
+        YoutubeDL.getInstance().execute(req, "resolve") { _, _, _ -> }.out.orEmpty()
+    } catch (e: Exception) {
+        // Un bot check leyendo la lista NO es "link inválido": se clasifica
+        // (403 / borrado / red) y se sube para que la UI lo diga como tal.
+        throw DlError(classifyFailure(e.message.orEmpty()), e)
     }
     val lines = out.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
     if (lines.isEmpty()) return null

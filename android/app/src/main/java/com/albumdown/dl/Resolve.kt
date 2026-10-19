@@ -47,7 +47,7 @@ suspend fun youtubeSearch3(query: String): List<ResolvedTrack> = withContext(Dis
         req.addOption("--quiet")
         req.addOption("--no-warnings")
         req.addOption("--print", "%(title)s\t%(uploader)s\t%(duration)s\t%(thumbnail)s\t%(webpage_url)s")
-        val out = YoutubeDL.getInstance().execute(req, "search") { _, _, _ -> }?.out.orEmpty()
+        val out = YoutubeDL.getInstance().execute(req, "search") { _, _, _ -> }.out
         out.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(3).mapNotNull { line ->
             val p = line.split('\t')
             if (p.isEmpty() || p[0].isEmpty()) return@mapNotNull null
@@ -57,7 +57,9 @@ suspend fun youtubeSearch3(query: String): List<ResolvedTrack> = withContext(Dis
                 pageUrl = p.getOrElse(4) { "" }, coverUrl = p.getOrElse(3) { "" }.takeIf { it != "NA" }.orEmpty(),
             )
         }.toList()
-    } catch (_: Exception) {
-        emptyList()
+    } catch (e: Exception) {
+        // Error de verdad (403, red, yt-dlp caído): sube clasificado. Los
+        // cero resultados no llegan acá — eso sale como lista vacía.
+        throw DlError(classifyFailure(e.message.orEmpty()), e)
     }
 }

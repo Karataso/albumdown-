@@ -55,12 +55,21 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     private suspend fun runDownload(): Result {
         setForeground(makeForeground())
         ensureInit(applicationContext)
+        // Caché de descargas anteriores interrumpidas: si no, __tmp_* y __fin_* se acumulan.
+        applicationContext.cacheDir.listFiles { f ->
+            f.name.startsWith("__tmp_") || f.name.startsWith("__fin_") ||
+                f.name.startsWith("__art__")
+        }?.forEach { it.delete() }
         maybeUpdateYtDlp() // 1 vez por semana, falla en silencio
         val url = inputData.getString("url").orEmpty()
         if (url.isEmpty()) return Result.failure()
 
-        val album = resolveAlbum(applicationContext, url)
-            ?: return Result.failure(workDataOf("error" to "No se pudo leer el álbum (¿link válido?)"))
+        val album = try {
+            resolveAlbum(applicationContext, url)
+        } catch (e: DlError) {
+            // Un bot check en la lectura no es "link inválido": se dice como tal.
+            return Result.failure(workDataOf("error" to failureUserMessage(e.kind)))
+        } ?: return Result.failure(workDataOf("error" to "No se pudo leer el álbum (¿link válido?)"))
         if (album.tracks.isEmpty()) return Result.failure(workDataOf("error" to "Sin canciones"))
 
         val relPath = "${Environment.DIRECTORY_MUSIC}/AlbumDown/${sanitize(album.artist)}/${sanitize(album.name)}"
@@ -78,34 +87,72 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val artFile = downloadBytes(album.coverUrl)?.let { normalizeArt(it) }
 
         var processed = 0
+        // Primera vez que YouTube nos tira un 403 en este run: todo lo que sigue
+        // corre más suave en vez de seguir pidiendo (albumdown:1150 block_seen).
+        var blockSeen = false
         for ((i, t) in chosen) {
             val num = i + 1
             val displayName = "%02d. %s.mp3".format(num, sanitize(t.title))
+            val progressLabel = "${processed + 1} de ${chosen.size} · ${t.title}"
             setProgress(workDataOf("done" to processed, "total" to chosen.size, "label" to t.title))
+            // Notificación con la pista en curso: sin esto la notificación se queda
+            // clavada en "Descargando álbum…" durante 10 minutos.
+            setForeground(makeForeground(progressLabel))
 
             if (mediaStoreExists(applicationContext, "$relPath/", displayName)) {
                 skipped++
                 processed++
                 continue
             }
-            // Spotify no tiene URL de audio: se busca el mejor match en YouTube
-            // (título/artista/duración ya son exactos, sacados del embed).
-            val source = t.pageUrl.ifBlank {
-                pickBest(t.title, t.artist, t.durationSec, youtubeSearch3("${t.artist} ${t.title}"))
-                    ?.pageUrl.orEmpty()
+            // Retry con política (albumdown:1269-1306): block/gone/transient con
+            // backoff con tope; "gone" jamás se reintenta. La pista solo cuenta
+            // si su archivo de verdad existe. La búsqueda (Spotify → YouTube)
+            // vive dentro del mismo try: ese request también recibe 403s.
+            var audio: File? = null
+            var kind = FailureKind.TRANSIENT
+            var attempt = 0
+            while (true) {
+                try {
+                    // Spotify no tiene URL de audio: se busca el mejor match en YouTube
+                    // (título/artista/duración ya son exactos, sacados del embed).
+                    val source = t.pageUrl.ifBlank {
+                        pickBest(t.title, t.artist, t.durationSec, youtubeSearch3("${t.artist} ${t.title}"))
+                            ?.pageUrl.orEmpty()
+                    }
+                    if (source.isBlank()) { // ni siquiera hay dónde buscarlo
+                        kind = FailureKind.GONE
+                        break
+                    }
+                    audio = downloadBestAudio(source, num)
+                    break
+                } catch (e: Exception) {
+                    kind = (e as? DlError)?.kind ?: classifyFailure(e.message.orEmpty())
+                    if (kind == FailureKind.BLOCK) blockSeen = true
+                    if (kind == FailureKind.GONE || attempt >= retryTries(kind)) break
+                    val wait = retryWait(kind, attempt)
+                    attempt++
+                    val label = "⏳ ${failureNote(kind)} — reintento " +
+                        "$attempt/${retryTries(kind)} en ${wait}s"
+                    setProgress(workDataOf("done" to processed, "total" to chosen.size, "label" to label))
+                    setForeground(makeForeground(label))
+                    delay(wait * 1000L)
+                }
             }
-            val audio = if (source.isBlank()) null else downloadBestAudio(source, num) // cascada de 3 intentos (bot:537)
             if (audio == null) {
-                failed.add("%02d. %s".format(num, t.title))
+                failed.add("%02d. %s (%s)".format(num, t.title, failureNote(kind)))
                 processed++
                 continue
             }
             val tagged = tagMp3(audio, artFile, t.title, t.artist.ifEmpty { album.artist }, album.name, num)
             audio.delete()
-            if (tagged != null && insertToMusic(tagged, relPath, displayName)) ok++ else failed.add("%02d. %s".format(num, t.title))
+            if (tagged != null && insertToMusic(tagged, relPath, displayName)) ok++ else failed.add(
+                "%02d. %s (%s)".format(num, t.title, failureNote(kind))
+            )
             tagged?.delete()
             processed++
-            delay(1500) // anti-rate-limit (albumdown:795)
+            // Anti-rate-limit (albumdown:1339-1358): 1.5s normal, 10s si YouTube ya
+            // nos cachó un 403 en este run — y nada de esperar tras la última pista.
+            if (processed < chosen.size) delay((interTrackDelay(blockSeen) * 1000).toLong())
         }
 
         artFile?.delete()
@@ -113,16 +160,22 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         return Result.success(workDataOf("ok" to ok, "skipped" to skipped, "failed" to failed.joinToString(" | ")))
     }
 
-    /** Cascada yt-dlp: default → HLS → android client, con backoff de 2s. */
-    private fun downloadBestAudio(pageUrl: String, num: Int): File? {
+    /**
+     * Cascada yt-dlp: default → HLS → android client, con 2s entre rutas.
+     * Si las 3 rutas fallan LANZA el último error (clasificado) en vez de
+     * devolver null — así el caller sabe si es un 403, un video borrado o la
+     * red, y decide cuánto esperar (albumdown:1008 Failure Handling).
+     */
+    private suspend fun downloadBestAudio(pageUrl: String, num: Int): File {
         val out = File(applicationContext.cacheDir, "__tmp_${num}__.%(ext)s")
         val attempts = listOf(
             arrayOf("-f", "bestaudio/best"),
             arrayOf("-f", "bestaudio[protocol=m3u8]/bestaudio/best"),
             arrayOf("-f", "best", "--extractor-args", "youtube:player_client=android"),
         )
+        var last: Exception? = null
         for ((i, fmt) in attempts.withIndex()) {
-            if (i > 0) Thread.sleep(2000)
+            if (i > 0) delay(2000) // delay, no Thread.sleep: no bloquea un hilo y respeta la cancelación
             try {
                 val req = YoutubeDLRequest(pageUrl)
                 req.addOption("--no-playlist")
@@ -141,10 +194,15 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 File(applicationContext.cacheDir, "__tmp_${num}__.webm").takeIf { it.exists() }?.let { return it }
                 applicationContext.cacheDir.listFiles { f -> f.name.startsWith("__tmp_${num}__.") }
                     ?.firstOrNull()?.let { return it }
-            } catch (_: Exception) {
+                // yt-dlp salió en 0 pero sin archivo: también es un fallo (el de
+                // albumdown confía solo en el archivo en disco, albumdown:1092).
+                last = RuntimeException("yt-dlp terminó sin producir audio")
+            } catch (e: Exception) {
+                last = e
             }
         }
-        return null
+        val err = last ?: RuntimeException("yt-dlp no produjo audio")
+        throw DlError(classifyFailure(err.message.orEmpty()), err)
     }
 
     /**
@@ -228,7 +286,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         }
     }
 
-    private fun makeForeground(): ForegroundInfo {
+    private fun makeForeground(text: String = "Descargando álbum…"): ForegroundInfo {
         val mgr = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
             mgr.createNotificationChannel(
@@ -237,7 +295,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         }
         val notif = NotificationCompat.Builder(applicationContext, "dl")
             .setContentTitle("AlbumDown")
-            .setContentText("Descargando álbum…")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download) // ponytail: icono del sistema, 0 assets
             .setOngoing(true)
             .build()
