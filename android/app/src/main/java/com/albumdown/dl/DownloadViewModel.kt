@@ -9,11 +9,12 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 sealed interface UiState {
@@ -28,7 +29,16 @@ sealed interface UiState {
 class DownloadViewModel : ViewModel() {
     private val _state = MutableStateFlow<UiState>(UiState.Idle)
     val state: StateFlow<UiState> = _state
+
+    // Selección del preview: vive acá y no en el composable — la UI solo dibuja
+    // y manda toggles, y download() lee su propia selección en vez de recibirla
+    // como parámetro (imposible que se desincronice del preview en pantalla).
+    // StateFlow (no estado de Compose): el paquete dl sigue sin depender de UI.
+    private val _selected = MutableStateFlow<List<Boolean>>(emptyList())
+    val selected: StateFlow<List<Boolean>> = _selected
+
     private var lastWorkId: UUID? = null
+    private var observeJob: Job? = null // un solo observador: cancela el anterior
 
     fun wifiOnly(ctx: Context): Boolean =
         ctx.getSharedPreferences("albumdown", Context.MODE_PRIVATE).getBoolean("wifi_only", true)
@@ -48,10 +58,11 @@ class DownloadViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val album = resolveAlbum(app, t)
-                _state.value = when {
-                    album == null || album.tracks.isEmpty() ->
-                        UiState.Error("No se pudo leer el álbum")
-                    else -> UiState.Preview(album, t)
+                if (album == null || album.tracks.isEmpty()) {
+                    _state.value = UiState.Error("No se pudo leer el álbum")
+                } else {
+                    _selected.value = List(album.tracks.size) { true } // todo marcado
+                    _state.value = UiState.Preview(album, t)
                 }
             } catch (e: DlError) {
                 _state.value = UiState.Error(failureUserMessage(e.kind))
@@ -61,58 +72,117 @@ class DownloadViewModel : ViewModel() {
         }
     }
 
-    /**
-     * indices = posiciones (0-based) de las canciones elegidas en el preview.
-     */
-    fun download(ctx: Context, album: Album, url: String, indices: List<Int>) {
+    fun toggle(index: Int) {
+        val sel = _selected.value
+        if (index !in sel.indices) return
+        _selected.value = sel.mapIndexed { i, v -> if (i == index) !v else v }
+    }
+
+    fun selectAll(value: Boolean) {
+        if (_selected.value.isEmpty()) return
+        _selected.value = List(_selected.value.size) { value }
+    }
+
+    /** Descarga lo seleccionado en el preview en curso. */
+    fun download(ctx: Context) {
+        val preview = _state.value as? UiState.Preview ?: return
+        val indices = _selected.value.indices.filter { _selected.value[it] }
+        if (indices.isEmpty()) return
         val app = ctx.applicationContext
+
         // ponytail: solo-WiFi por defecto (un álbum con datos duele). Se quita en ⚙.
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(if (wifiOnly(app)) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
         val req = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setConstraints(constraints)
-            .setInputData(workDataOf("url" to url, "indices" to indices.joinToString(",")))
+            .setInputData(WorkContract.input(preview.url, indices))
             .build()
         lastWorkId = req.id
-        // Única cola: dos álbumes a la vez chocan en caché (__art__.jpg, __tmp_N__ son
-        // nombres fijos). APPEND_OR_REPLACE = si el anterior falló se limpia la cola,
-        // si está corriendo, el nuevo espera su turno.
+        // Cola única: dos álbumes a la vez nunca (el worker comparte proceso y
+        // notificación). APPEND_OR_REPLACE = si el anterior falló se limpia la
+        // cola; si está corriendo, el nuevo espera su turno.
         WorkManager.getInstance(app)
-            .enqueueUniqueWork("album-down", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
-        observe(app, req.id, album.name, indices.size)
+            .enqueueUniqueWork(WorkContract.UNIQUE_WORK, ExistingWorkPolicy.APPEND_OR_REPLACE, req)
+
+        // Estado visible desde el instante: antes la pantalla se quedaba en el
+        // preview hasta que el worker arrancara (o para siempre, si estaba en cola).
+        _state.value = UiState.Downloading(0, indices.size, "", preview.album.name)
+        observe(app, req.id)
     }
 
     fun cancel(ctx: Context) {
         lastWorkId?.let { WorkManager.getInstance(ctx.applicationContext).cancelWorkById(it) }
     }
 
-    private fun observe(app: Context, id: UUID, albumName: String, total: Int) {
+    /**
+     * Re-adjunta la UI a un trabajo que sigue vivo: si la app murió (y revivió
+     * o el usuario la reabrió), WorkManager sigue descargando en background
+     * pero la pantalla decía Idle con el botón Cancel muerto. Sin esto, una
+     * descarga larga se "pierde" aunque el archivo termine llegando.
+     */
+    fun attachIfRunning(ctx: Context) {
+        if (_state.value != UiState.Idle || lastWorkId != null) return
+        val app = ctx.applicationContext
         viewModelScope.launch {
+            val active = withContext(Dispatchers.IO) {
+                try {
+                    WorkManager.getInstance(app)
+                        .getWorkInfosForUniqueWork(WorkContract.UNIQUE_WORK).get()
+                        .firstOrNull { !it.state.isFinished }
+                } catch (e: Exception) {
+                    null
+                }
+            } ?: return@launch
+            lastWorkId = active.id
+            val p = active.progress
+            _state.value = UiState.Downloading(
+                0, p.getInt(WorkContract.PR_TOTAL, 0), "En cola…",
+                p.getString(WorkContract.PR_ALBUM).orEmpty(),
+            )
+            observe(app, active.id)
+        }
+    }
+
+    /**
+     * Un solo observador por trabajo. El total y el nombre del álbum salen del
+     * progreso que publica el worker (WorkContract) — antes se le pasaban a
+     * mano desde la UI y podían no coincidir con lo que el worker hacía.
+     */
+    private fun observe(app: Context, id: UUID) {
+        observeJob?.cancel()
+        observeJob = viewModelScope.launch {
             WorkManager.getInstance(app).getWorkInfoByIdFlow(id).collect { info ->
                 if (info == null) return@collect
+                val p = info.progress
+                val total = p.getInt(WorkContract.PR_TOTAL, 0)
+                val albumName = p.getString(WorkContract.PR_ALBUM).orEmpty()
                 when (info.state) {
-                    // Cola (unique work): todavía no arrancó — se muestra como "en cola"
-                    // en vez de dejar la pantalla clavada en el preview.
-                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> _state.value = UiState.Downloading(
-                        0, total, "En cola…", albumName,
-                    )
-                    WorkInfo.State.RUNNING -> {
-                        val p = info.progress
+                    // Cola (unique work): todavía no arrancó — se muestra como
+                    // "en cola" en vez de dejar la pantalla clavada en el preview.
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+                        _state.value = UiState.Downloading(0, total, "En cola…", albumName)
+
+                    WorkInfo.State.RUNNING ->
                         _state.value = UiState.Downloading(
-                            p.getInt("done", 0), p.getInt("total", total),
-                            p.getString("label").orEmpty(), albumName
+                            p.getInt(WorkContract.PR_DONE, 0), total,
+                            p.getString(WorkContract.PR_LABEL).orEmpty(), albumName,
                         )
-                    }
+
                     WorkInfo.State.SUCCEEDED -> {
                         val o = info.outputData
                         _state.value = UiState.Done(
-                            o.getInt("ok", 0), o.getInt("skipped", 0), o.getString("failed").orEmpty()
+                            o.getInt(WorkContract.OUT_OK, 0),
+                            o.getInt(WorkContract.OUT_SKIPPED, 0),
+                            o.getString(WorkContract.OUT_FAILED).orEmpty(),
                         )
                     }
-                    WorkInfo.State.FAILED -> {
-                        _state.value = UiState.Error(info.outputData.getString("error") ?: "Falló la descarga")
-                    }
+
+                    WorkInfo.State.FAILED ->
+                        _state.value = UiState.Error(
+                            info.outputData.getString(WorkContract.OUT_ERROR) ?: "Falló la descarga",
+                        )
+
                     WorkInfo.State.CANCELLED -> _state.value = UiState.Idle
                     else -> Unit
                 }
@@ -121,6 +191,9 @@ class DownloadViewModel : ViewModel() {
     }
 
     fun reset() {
+        observeJob?.cancel()
+        observeJob = null
+        _selected.value = emptyList()
         _state.value = UiState.Idle
     }
 }

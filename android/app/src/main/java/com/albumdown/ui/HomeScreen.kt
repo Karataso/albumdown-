@@ -53,7 +53,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -99,6 +98,10 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
             vm.resolve(ctx, shared)
         }
     }
+
+    // Si la app revivió con una descarga en marcha, la UI se vuelve a colgar
+    // del trabajo real en vez de quedar en Idle con el Cancel muerto.
+    LaunchedEffect(Unit) { vm.attachIfRunning(ctx) }
 
     Scaffold(
         topBar = {
@@ -171,7 +174,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
 
                 is UiState.Preview -> {
                     val a = s.album
-                    val selected = remember(s) { mutableStateListOf(*Array(a.tracks.size) { true }) }
+                    val selected by vm.selected.collectAsState()
                     val nSel = selected.count { it }
                     Card(Modifier.fillMaxWidth().weight(1f), shape = RoundedCornerShape(20.dp)) {
                         Column(
@@ -225,18 +228,18 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 Text("Seleccionadas: $nSel de ${a.tracks.size}", style = MaterialTheme.typography.labelLarge)
                                 TextButton(onClick = {
                                     val all = nSel == a.tracks.size
-                                    for (k in selected.indices) selected[k] = !all
+                                    vm.selectAll(!all)
                                 }) { Text(if (nSel == a.tracks.size) "Ninguna" else "Todas") }
                             }
                             LazyColumn(Modifier.weight(1f)) {
                                 itemsIndexed(a.tracks) { i, t ->
                                     Row(
                                         Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                                            .clickable { selected[i] = !selected[i] }
+                                            .clickable { vm.toggle(i) }
                                             .padding(vertical = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Checkbox(checked = selected[i], onCheckedChange = { selected[i] = it })
+                                        Checkbox(checked = selected[i], onCheckedChange = { vm.toggle(i) })
                                         val thumb = t.coverUrl.ifEmpty { a.coverUrl }
                                         if (thumb.isNotBlank()) {
                                             AsyncImage(
@@ -287,7 +290,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                             shape = RoundedCornerShape(16.dp),
                         ) { Text("Atrás") }
                         Button(
-                            onClick = { vm.download(ctx, a, s.url, selected.indices.filter { selected[it] }) },
+                            onClick = { vm.download(ctx) },
                             modifier = Modifier.weight(2f),
                             enabled = nSel > 0,
                             shape = RoundedCornerShape(16.dp),
