@@ -191,6 +191,11 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 delay(if (safe) 2000 else 500)
                 lyricsSynced = synced
                 lyricsPlain = plain ?: synced?.let { stripSyncedTimestamps(it) }
+                // Diagnóstico: si LRCLIB no trae sincronizada no hay .lrc, y eso
+                // era el único camino que quedaba en silencio.
+                if (lyricsPlain != null && lyricsSynced == null) {
+                    Log.d("LrcLib", "sin sincronizada para '${t.title}': no habrá .lrc")
+                }
             }
 
             val tagged = tagMp3(
@@ -383,9 +388,12 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             val resolver = applicationContext.contentResolver
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, lrcName)
-                // text/plain a propósito: un mime audio/* metería el .lrc en la
-                // librería de música como pista fantasma.
-                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                // Sin MIME_TYPE a propósito: el provider lo deduce de la
+                // extensión (".lrc" → application/lrc, verificado con probes en
+                // Android 16). Fijar "text/plain" hacía que Android renombrara
+                // el archivo a "<track>.lrc.txt" y los players buscan
+                // "<track>.lrc" exacto; un mime audio/* lo metería además en
+                // la librería de música como pista fantasma.
                 put(MediaStore.MediaColumns.RELATIVE_PATH, relPath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
@@ -400,6 +408,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 values.clear()
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
+                Log.d("Lrc", ".lrc escrito: $relPath/$lrcName")
             } catch (e: Exception) {
                 resolver.delete(uri, null, null)
                 throw e
