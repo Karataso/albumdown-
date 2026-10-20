@@ -213,7 +213,8 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                     )
                                     val totalDur = a.tracks.sumOf { it.durationSec }
                                     Text(
-                                        "${a.tracks.size} canciones" +
+                                        "${a.tracks.size} " +
+                                            (if (a.tracks.size == 1) "canción" else "canciones") +
                                             if (totalDur > 0) " • ${formatDuration(totalDur)}" else "",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary,
