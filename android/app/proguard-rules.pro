@@ -16,3 +16,7 @@
 -dontwarn java.beans.**
 -dontwarn org.tukaani.xz.**
 -dontwarn org.w3c.dom.bootstrap.**
+
+# jaudiotagger: reflection interna para los frames ID3 (USLT de la letra).
+# Sin esta regla R8 se lo come y en release la letra no se embebe.
+-keep class org.jaudiotagger.** { *; }

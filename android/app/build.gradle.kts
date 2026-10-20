@@ -85,6 +85,10 @@ dependencies {
     // El com.arthenica original se retiró de Central (abril 2025); este es el
     // fork mantenido, drop-in: mismo paquete com.arthenica.ffmpegkit.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.9")
+    // Frames USLT reales para la letra embebida. ffmpeg no sabe escribir USLT:
+    // `-metadata lyrics=` produce un TXXX privado que ningún player lee
+    // (probado con lavf 61 y 62) — el CLI lo hace con mutagen, acá con esto.
+    implementation("org.jaudiotagger:jaudiotagger:2.0.1")
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     implementation("androidx.core:core-ktx:1.13.1")

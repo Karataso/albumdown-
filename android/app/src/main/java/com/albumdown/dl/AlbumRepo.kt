@@ -199,10 +199,11 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
             coverUrl = r.thumb.takeIf { it.isNotEmpty() && it != "NA" }.orEmpty(),
         )
     }
-    // Portada: TODOS los candidatos de mayor a menor ancho (port del cascada
-    // cover_urls de albumdown:549-566). El CLI solo mira el playlist-level, y en
-    // playlists comunes eso es una miniatura de 336px — el real suele estar en
-    // i.ytimg/vi/<id>/maxresdefault.jpg (1280x720), derivable sin llamadas.
+    // Portada (port del cascada cover_urls, albumdown:549-566): PRIMERO los
+    // thumbnails del playlist — el mismo orden que usa el CLI, así que sale la
+    // MISMA carátula que el script (en álbumes de YT Music: la portada oficial
+    // cuadrada). El resto (maxres del video, miniaturas por entrada, oEmbed) va
+    // de respaldo ordenado por ancho, por si el playlist no trae ninguno.
     val plCands = thumbCands(root.optJSONArray("thumbnails")).toMutableList()
     root.optString("thumbnail").takeIf { it.isNotEmpty() }?.let { u ->
         // info.thumbnail como último recurso del playlist, como en el CLI.
@@ -225,10 +226,10 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
             (if (it.contains("soundcloud.com", true)) 500 else 320) to it
         }
     }
-    val coverUrls = (plCands + raws.flatMap { it.cands } + synth + singles)
-        .sortedByDescending { it.first } // estable: en empate gana el playlist
+    val rest = (raws.flatMap { it.cands } + synth + singles)
+        .sortedByDescending { it.first }
         .map { it.second }
-        .distinct()
+    val coverUrls = (plCands.map { it.second } + rest).distinct()
     return Album(
         artist, album.ifEmpty { "Unknown Album" }, tracks,
         coverUrls.firstOrNull().orEmpty(), coverUrls,

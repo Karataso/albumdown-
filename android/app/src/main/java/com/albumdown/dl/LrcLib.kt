@@ -4,7 +4,10 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.jaudiotagger.audio.AudioFileIO
+import org.jaudiotagger.tag.FieldKey
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -74,6 +77,34 @@ fun bestLyricMatch(candidates: List<LrcLibMatch>): LrcLibMatch? =
 fun stripSyncedTimestamps(synced: String): String =
     Regex("""^\[[^\]]+\]\s*""", RegexOption.MULTILINE).replace(synced, "").trim()
 
+/**
+ * Escribe la letra como frame USLT REAL del ID3v2. `-metadata lyrics=` de
+ * ffmpeg solo produce un TXXX privado (probado con lavf 61 y 62) que ningún
+ * player lee — el CLI lo hace con mutagen (`_embed_lyrics`); acá el
+ * equivalente es jaudiotagger. Devuelve false si falla: la descarga no
+ * depende de esto, y el resumen mostrará un conteo menor de "con letras".
+ */
+fun embedUslt(file: File, lyrics: String): Boolean {
+    // jaudiotagger loguea a java.util.logging a nivel INFO: un torrente en
+    // logcat por cada tag. Se silencia solo durante el write.
+    val jl = java.util.logging.Logger.getLogger("org.jaudiotagger")
+    val prev = jl.level
+    jl.level = java.util.logging.Level.OFF
+    return try {
+        val af = AudioFileIO.read(file)
+        val tag = af.tag ?: af.createDefaultTag()
+        tag.setField(FieldKey.LYRICS, lyrics)
+        af.tag = tag
+        af.commit()
+        true
+    } catch (e: Exception) {
+        Log.w("LrcLib", "USLT no se pudo embeber en ${file.name}: $e")
+        false
+    } finally {
+        jl.level = prev
+    }
+}
+
 // ── IO ────────────────────────────────────────────────────────────
 
 /**
@@ -101,7 +132,11 @@ suspend fun lrclibLookup(
         }
         if (responded) break
     }
-    if (!responded || results.isEmpty()) return@withContext null to null
+    if (!responded) return@withContext null to null
+    if (results.isEmpty()) {
+        Log.d("LrcLib", "0 resultados de LRCLIB para '$title' — '$artist'")
+        return@withContext null to null
+    }
 
     val matches = results.mapNotNull { r ->
         if (r.optBoolean("instrumental")) return@mapNotNull null
@@ -119,7 +154,11 @@ suspend fun lrclibLookup(
         )
         if (score < 0) null else LrcLibMatch(plain, synced, score)
     }
-    val best = bestLyricMatch(matches) ?: return@withContext null to null
+    val best = bestLyricMatch(matches)
+    if (best == null) {
+        Log.d("LrcLib", "${results.size} candidatos descartados por scoring para '$title'")
+        return@withContext null to null
+    }
     best.plain to best.synced
 }
 

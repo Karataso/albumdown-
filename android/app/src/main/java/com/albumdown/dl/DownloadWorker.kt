@@ -8,6 +8,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -177,24 +178,37 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 processed++
                 continue
             }
-            // Letras (--lyrics): se buscan antes de taggear para embeberlas en la
-            // misma pasada de ffmpeg. Pausa de cortesía a LRCLIB como en el CLI
-            // (albumdown:927: 2s en safe, 0.5s normal).
-            val lyricsPlain = if (wantLyrics) {
+            // Letras (--lyrics): se buscan antes de taggear. Pausa de cortesía a
+            // LRCLIB como en el CLI (albumdown:927: 2s en safe, 0.5s normal).
+            // plain → USLT embebido (embedUslt); synced → sidecar .lrc, igual
+            // que fetch_and_store_lyrics en albumdown:937-944.
+            var lyricsPlain: String? = null
+            var lyricsSynced: String? = null
+            if (wantLyrics) {
                 val (plain, synced) = lrclibLookup(
                     t.title, t.artist.ifEmpty { album.artist }, album.name, t.durationSec,
                 )
                 delay(if (safe) 2000 else 500)
-                plain ?: synced?.let { stripSyncedTimestamps(it) }
-            } else null
+                lyricsSynced = synced
+                lyricsPlain = plain ?: synced?.let { stripSyncedTimestamps(it) }
+            }
 
             val tagged = tagMp3(
                 audio, artFile, t.title, t.artist.ifEmpty { album.artist }, album.name,
-                num, quality, lyricsPlain,
+                num, quality,
             )
-            if (tagged != null && lyricsPlain != null) withLyrics++
+            // ffmpeg no sabe USLT (→ TXXX privado que ningún player lee): la
+            // letra real la pone jaudiotagger, como mutagen en el CLI.
+            val plain = lyricsPlain
+            val embedded = tagged != null && plain != null && embedUslt(tagged, plain)
+            if (embedded) withLyrics++
             audio.delete()
-            if (tagged != null && insertToMusic(tagged, relPath, displayName)) ok++ else failed.add(
+            if (tagged != null && insertToMusic(tagged, relPath, displayName)) {
+                ok++
+                // Sidecar .lrc junto al mp3 si hubo letra sincronizada: mejor
+                // esfuerzo, su fallo no rompe la descarga ni el conteo.
+                lyricsSynced?.let { writeLrc(relPath, displayName, it) }
+            } else failed.add(
                 "%02d. %s (%s)".format(num, t.title, note(kind))
             )
             tagged?.delete()
@@ -266,18 +280,16 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     }
 
     /**
-     * Convierte a MP3 + tags + portada en UN comando ffmpeg (0 libs ID3).
-     * Equivale a embed_metadata + embed_art de albumdown.
-     */
-    /**
-     * Convierte a MP3 y taggea en una sola pasada. `quality` va 0-10 (como el
+     * Convierte a MP3 + tags + portada en UN comando ffmpeg — equivalente a
+     * embed_metadata + embed_art de albumdown. `quality` va 0-10 (como el
      * --quality del CLI: 0=mejor, 10=peor) y se mapea al -q:a de LAME, que es
-     * 0-9 (VBR, 0 = mejor). `lyrics` se embebe como frame USLT (verificado: con
-     * -id3v2_version 3 ffmpeg lo escribe como USLT real).
+     * 0-9 (VBR, 0 = mejor). La letra NO va acá: `-metadata lyrics=` solo produce
+     * un TXXX privado que ningún player lee — el USLT real lo escribe
+     * embedUslt() después de esta pasada.
      */
     private fun tagMp3(
         audio: File, art: File?, title: String, artist: String, album: String,
-        num: Int, quality: Int, lyrics: String?,
+        num: Int, quality: Int,
     ): File? {
         val out = File(workDir, "__fin_${num}__.mp3")
         out.delete()
@@ -293,10 +305,6 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 "-metadata", "album=$album", "-metadata", "track=$num",
             )
         )
-        if (!lyrics.isNullOrBlank()) {
-            // ffmpeg convierte esta llave en un frame USLT del ID3v2.
-            cmd.addAll(listOf("-metadata", "lyrics=$lyrics"))
-        }
         cmd.add(out.absolutePath)
         return try {
             val s = FFmpegKit.executeWithArguments(cmd.toTypedArray())
@@ -356,6 +364,48 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             }
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /**
+     * Sidecar .lrc junto al mp3 (albumdown:937-944), vía MediaStore.Files —
+     * igual que hace el CLI con `Path.with_suffix(".lrc")`. Mejor esfuerzo: si
+     * la fila no se puede crear (o API < 29, donde no existe RELATIVE_PATH),
+     * se loguea y la descarga sigue — la letra ya va embebida en el mp3.
+     */
+    private fun writeLrc(relPath: String, displayName: String, synced: String) {
+        if (Build.VERSION.SDK_INT < 29) {
+            Log.w("Lrc", ".lrc omitido: RELATIVE_PATH requiere API 29")
+            return
+        }
+        val lrcName = displayName.removeSuffix(".mp3") + ".lrc"
+        try {
+            val resolver = applicationContext.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, lrcName)
+                // text/plain a propósito: un mime audio/* metería el .lrc en la
+                // librería de música como pista fantasma.
+                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relPath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL), values)
+                ?: run { Log.w("Lrc", ".lrc insert devolvió null: $lrcName"); return }
+            try {
+                val copied = resolver.openOutputStream(uri)?.use { out ->
+                    (synced.trim() + "\n").byteInputStream(Charsets.UTF_8).use { it.copyTo(out) }
+                    true
+                } ?: false
+                if (!copied) throw IllegalStateException("sin stream de salida")
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } catch (e: Exception) {
+                resolver.delete(uri, null, null)
+                throw e
+            }
+        } catch (e: Exception) {
+            Log.w("Lrc", ".lrc no se pudo escribir ($lrcName): $e")
         }
     }
 
