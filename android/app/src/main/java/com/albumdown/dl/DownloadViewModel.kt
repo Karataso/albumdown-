@@ -23,7 +23,7 @@ sealed interface UiState {
     data object Resolving : UiState
     data class Preview(val album: Album, val url: String) : UiState
     data class Downloading(val done: Int, val total: Int, val label: String, val albumName: String) : UiState
-    data class Done(val ok: Int, val skipped: Int, val failed: String) : UiState
+    data class Done(val ok: Int, val skipped: Int, val failed: String, val lyrics: Int = -1) : UiState
     data class Error(val msg: String) : UiState
 }
 
@@ -186,6 +186,7 @@ class DownloadViewModel : ViewModel() {
                             o.getInt(WorkContract.OUT_OK, 0),
                             o.getInt(WorkContract.OUT_SKIPPED, 0),
                             o.getString(WorkContract.OUT_FAILED).orEmpty(),
+                            o.getInt(WorkContract.OUT_LYRICS, -1),
                         )
                     }
 

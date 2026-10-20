@@ -107,10 +107,18 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         // UI (también si la app murió y vuelve a adjuntarse al trabajo).
         setProgress(WorkContract.progress(0, chosen.size, "", album.name))
 
-        // Portada una vez para todo el álbum (albumdown:591). --no-art la salta.
-        val artFile = if (wantArt) downloadBytes(album.coverUrl)?.let { normalizeArt(it) } else null
+        // Portada una vez para todo el álbum, con la MISMA cascada del CLI
+        // (albumdown:1134-1145): candidatos de mayor a menor y gana el primero
+        // que baje. --no-art la salta.
+        val artFile = if (wantArt) {
+            album.coverUrls.ifEmpty { listOf(album.coverUrl) }
+                .firstNotNullOfOrNull { u -> downloadBytes(u)?.let { normalizeArt(it) } }
+        } else null
 
         var processed = 0
+        // Pistas con letra embebida: viaja al resumen final (albumdown:1377-1378)
+        // para que "0 con letras" se VEA en vez de fallar en silencio.
+        var withLyrics = 0
         // Primera vez que YouTube nos tira un 403 en este run: todo lo que sigue
         // corre más suave en vez de seguir pidiendo (albumdown:1150 block_seen).
         var blockSeen = false
@@ -184,6 +192,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 audio, artFile, t.title, t.artist.ifEmpty { album.artist }, album.name,
                 num, quality, lyricsPlain,
             )
+            if (tagged != null && lyricsPlain != null) withLyrics++
             audio.delete()
             if (tagged != null && insertToMusic(tagged, relPath, displayName)) ok++ else failed.add(
                 "%02d. %s (%s)".format(num, t.title, note(kind))
@@ -198,7 +207,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
 
         artFile?.delete()
         setProgress(WorkContract.progress(chosen.size, chosen.size, "", album.name))
-        return Result.success(WorkContract.success(ok, skipped, failed))
+        return Result.success(WorkContract.success(ok, skipped, failed, if (wantLyrics) withLyrics else -1))
     }
 
     /**

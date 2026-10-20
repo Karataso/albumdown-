@@ -26,6 +26,7 @@
     <string name="percent">%d%%</string>
     <string name="cancel">Cancel</string>
     <string name="done_title">Done!</string>
+    <string name="done_lyrics">♪ %d with lyrics</string>
     <string name="done_summary">%1$d downloaded • %2$d already there</string>
     <string name="failed_prefix">Failed: %s</string>
     <string name="another_album">Another album</string>

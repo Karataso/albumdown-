@@ -44,6 +44,7 @@ object WorkContract {
     // Salida
     const val OUT_OK = "ok"
     const val OUT_SKIPPED = "skipped"
+    const val OUT_LYRICS = "lyrics"   // pistas con letra; -1 si --lyrics apagado
     const val OUT_FAILED = "failed"
     const val OUT_ERROR = "error"
 
@@ -60,8 +61,13 @@ object WorkContract {
     fun progress(done: Int, total: Int, label: String, album: String): Data =
         workDataOf(PR_DONE to done, PR_TOTAL to total, PR_LABEL to label, PR_ALBUM to album)
 
-    fun success(ok: Int, skipped: Int, failed: List<String>): Data =
-        workDataOf(OUT_OK to ok, OUT_SKIPPED to skipped, OUT_FAILED to failed.joinToString(" | "))
+    fun success(ok: Int, skipped: Int, failed: List<String>, lyrics: Int = -1): Data =
+        workDataOf(
+            OUT_OK to ok,
+            OUT_SKIPPED to skipped,
+            OUT_FAILED to failed.joinToString(" | "),
+            OUT_LYRICS to lyrics,
+        )
 
     fun failure(message: String): Data = workDataOf(OUT_ERROR to message)
 }

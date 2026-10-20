@@ -1,6 +1,11 @@
 package com.albumdown.dl
 
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -75,10 +80,28 @@ fun stripSyncedTimestamps(synced: String): String =
  * Busca la letra en LRCLIB. Devuelve (plana, sincronizada) — ambas pueden ser
  * null. El primer intento es por título+artista exactos; si no, búsqueda libre.
  */
-fun lrclibLookup(title: String, artist: String, album: String?, durationSec: Int): Pair<String?, String?> {
-    var results = lrclibSearch(trackName = title, artistName = artist)
-    if (results.isEmpty()) results = lrclibSearch(query = "$title $artist")
-    if (results.isEmpty()) return null to null
+suspend fun lrclibLookup(
+    title: String, artist: String, album: String?, durationSec: Int,
+): Pair<String?, String?> = withContext(Dispatchers.IO) {
+    // Hasta 2 intentos: la red inestable fue exactamente lo que tapó el fallo
+    // de letras en la prueba de campo — sin reintento ni rastro, la descarga
+    // seguía "exitosa" sin letras y nadie se enteraba.
+    var results = emptyList<JSONObject>()
+    var responded = false
+    for (attempt in 1..2) {
+        results = try {
+            var r = lrclibSearch(trackName = title, artistName = artist)
+            if (r.isEmpty()) r = lrclibSearch(query = "$title $artist")
+            responded = true
+            r
+        } catch (e: Exception) {
+            Log.w("LrcLib", "LRCLIB no respondió (intento $attempt/2) en '$title': $e")
+            if (attempt < 2) delay(1_000)
+            emptyList()
+        }
+        if (responded) break
+    }
+    if (!responded || results.isEmpty()) return@withContext null to null
 
     val matches = results.mapNotNull { r ->
         if (r.optBoolean("instrumental")) return@mapNotNull null
@@ -96,10 +119,15 @@ fun lrclibLookup(title: String, artist: String, album: String?, durationSec: Int
         )
         if (score < 0) null else LrcLibMatch(plain, synced, score)
     }
-    val best = bestLyricMatch(matches) ?: return null to null
-    return best.plain to best.synced
+    val best = bestLyricMatch(matches) ?: return@withContext null to null
+    best.plain to best.synced
 }
 
+/**
+ * Busca en LRCLIB. LANZA si la red falla o el server responde ≠ 200: el caller
+ * reintenta y lo registra. Antes todo caía en catch → emptyList y un apagón de
+ * LRCLIB se confundía con "esta canción no tiene letras".
+ */
 private fun lrclibSearch(trackName: String? = null, artistName: String? = null, query: String? = null): List<JSONObject> {
     val params = buildMap {
         trackName?.let { put("track_name", it) }
@@ -110,16 +138,16 @@ private fun lrclibSearch(trackName: String? = null, artistName: String? = null, 
     val qs = params.entries.joinToString("&") { (k, v) ->
         "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
     }
+    val conn = URL("https://lrclib.net/api/search?$qs").openConnection() as HttpURLConnection
     return try {
-        val conn = URL("https://lrclib.net/api/search?$qs").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 15_000
         conn.setRequestProperty("User-Agent", UA)
+        if (conn.responseCode != 200) throw IOException("HTTP ${conn.responseCode}")
         val body = conn.inputStream.bufferedReader().use { it.readText() }
-        conn.disconnect()
         val arr = org.json.JSONArray(body)
         (0 until arr.length()).map { arr.getJSONObject(it) }
-    } catch (_: Exception) {
-        emptyList()
+    } finally {
+        conn.disconnect()
     }
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -19,7 +20,14 @@ data class Album(
     val artist: String,
     val name: String,
     val tracks: List<ResolvedTrack>,
+    /** La portada mayor: la que muestra la UI de preview. */
     val coverUrl: String = "",
+    /**
+     * Candidatos de portada de mayor a menor (playlist-level, miniaturas de
+     * entrada, maxres sintético…). El worker baja el primero que funcione —
+     * mismo cascada que cover_urls en albumdown:549-566.
+     */
+    val coverUrls: List<String> = emptyList(),
 )
 
 private val inited = AtomicBoolean(false)
@@ -87,7 +95,20 @@ suspend fun resolveAlbum(ctx: Context, url: String): Album? = withContext(Dispat
 private data class Raw(
     val title: String, val uploader: String, val album: String,
     val artist: String, val page: String, val thumb: String, val dur: Int,
+    /** thumbnails[] de la entrada: (ancho, url), de mayor a menor. */
+    val cands: List<Pair<Int, String>> = emptyList(),
 )
+
+/** thumbnails[] de un dict → (ancho, url) ordenado de mayor a menor. */
+private fun thumbCands(arr: JSONArray?): List<Pair<Int, String>> =
+    if (arr == null) emptyList()
+    else (0 until arr.length()).mapNotNull { i ->
+        val t = arr.optJSONObject(i) ?: return@mapNotNull null
+        t.optString("url").takeIf { u -> u.isNotEmpty() }?.let { t.optInt("width", 0) to it }
+    }.sortedByDescending { it.first }
+
+/** Id de un watch URL de YouTube, para derivar maxresdefault sin otra llamada. */
+private val YT_VID_RE = Regex("""(?:v=|vi/|youtu\.be/)([\w-]{11})\b""")
 
 private suspend fun resolveFlatPlaylist(url: String): Album? {
     val req = YoutubeDLRequest(url)
@@ -95,7 +116,11 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
     req.addOption("--skip-download")
     req.addOption("--quiet")
     req.addOption("--no-warnings")
-    req.addOption("--print", "%(title)s\t%(uploader)s\t%(album)s\t%(artist)s\t%(webpage_url)s\t%(duration)s\t%(thumbnail)s")
+    // --dump-single-json en vez de --print: además de las entradas trae el dict
+    // COMPLETO del playlist — su título (fallback del álbum, como hace el CLI en
+    // albumdown:479-505) y sus thumbnails (la portada real: 544² en álbumes
+    // OLAK5uy de YT Music). Con --print todo eso se perdía.
+    req.addOption("--dump-single-json")
     val out = try {
         // processId no-nulo + callback vacío: evita NPEs dentro de la lib.
         YoutubeDL.getInstance().execute(req, "resolve") { _, _, _ -> }.out.orEmpty()
@@ -104,16 +129,38 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
         // (403 / borrado / red) y se sube para que la UI lo diga como tal.
         throw DlError(classifyFailure(e.message.orEmpty()), e)
     }
-    val lines = out.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-    if (lines.isEmpty()) return null
+    val root = try {
+        JSONObject(out)
+    } catch (_: Exception) {
+        return null // la salida no es JSON → link que no sabemos resolver
+    }
 
-    val parsed = lines.mapNotNull { line ->
-        val p = line.split('\t')
-        val title = p.getOrElse(0) { "" }.ifEmpty { return@mapNotNull null }
+    // Video suelto → "álbum" de 1 pista (port de fetch_metadata, albumdown:476-483).
+    val listTitle = root.optString("title")
+    val entriesArr = root.optJSONArray("entries")
+    val dicts = if (entriesArr == null) {
+        if (listTitle.isBlank()) return null
+        listOf(root)
+    } else {
+        (0 until entriesArr.length()).mapNotNull { entriesArr.optJSONObject(it) }
+    }
+
+    val parsed = dicts.mapNotNull { e ->
+        val title = e.optString("title")
+        if (title.isEmpty()) return@mapNotNull null
         Raw(
-            title, p.getOrElse(1) { "" }, p.getOrElse(2) { "" }, p.getOrElse(3) { "" },
-            p.getOrElse(4) { "" }, p.getOrElse(6) { "" },
-            p.getOrElse(5) { "" }.toDoubleOrNull()?.toInt() ?: 0,
+            title = title,
+            uploader = e.optString("uploader").ifEmpty { e.optString("channel") },
+            album = e.optString("album"),
+            artist = e.optString("artist"),
+            // En plana webpage_url no existe: la URL vive en url (verificado en
+            // yt-dlp; --print sí la computaba, por eso antes funcionaba).
+            page = e.optString("webpage_url").ifEmpty {
+                e.optString("url").takeIf { u -> u.startsWith("http") }.orEmpty()
+            },
+            thumb = e.optString("thumbnail"),
+            dur = e.optDouble("duration", -1.0).let { if (it.isNaN() || it < 0) 0 else it.toInt() },
+            cands = thumbCands(e.optJSONArray("thumbnails")),
         )
     }
     if (parsed.isEmpty()) return null
@@ -121,6 +168,10 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
 
     // Álbum: tag por-entry primero (más limpio que el título de la playlist), igual que albumdown.
     var album = raws.firstNotNullOfOrNull { it.album.takeIf { a -> a.isNotEmpty() && a != "NA" } }?.trim().orEmpty()
+    // Sin tag (lo normal en playlists comunes): el TÍTULO DEL PLAYLIST, como el
+    // CLI (albumdown:479-505). Antes caíamos al título de la primera entrada y
+    // salía "[ost] dreamseeker" en vez del nombre real del álbum.
+    if (album.isEmpty()) album = cleanPlaylistTitle(listTitle)
     if (album.isEmpty()) album = cleanPlaylistTitle(raws.first().title)
     if (album == "Unknown Album" && url.contains("/likes", true)) album = "Me gusta"
 
@@ -148,10 +199,40 @@ private suspend fun resolveFlatPlaylist(url: String): Album? {
             coverUrl = r.thumb.takeIf { it.isNotEmpty() && it != "NA" }.orEmpty(),
         )
     }
-    // Portada del álbum = primer thumb disponible (en YT Music todos los tracks
-    // traen la misma portada del álbum; si algún día duele, pedir la del playlist).
-    val cover = tracks.firstOrNull { it.coverUrl.isNotEmpty() }?.coverUrl.orEmpty()
-    return Album(artist, album.ifEmpty { "Unknown Album" }, tracks, cover)
+    // Portada: TODOS los candidatos de mayor a menor ancho (port del cascada
+    // cover_urls de albumdown:549-566). El CLI solo mira el playlist-level, y en
+    // playlists comunes eso es una miniatura de 336px — el real suele estar en
+    // i.ytimg/vi/<id>/maxresdefault.jpg (1280x720), derivable sin llamadas.
+    val plCands = thumbCands(root.optJSONArray("thumbnails")).toMutableList()
+    root.optString("thumbnail").takeIf { it.isNotEmpty() }?.let { u ->
+        // info.thumbnail como último recurso del playlist, como en el CLI.
+        if (plCands.none { it.second == u }) plCands += 0 to u
+    }
+    val synth = raws.mapNotNull { r -> YT_VID_RE.find(r.page)?.groupValues?.get(1) }
+        .distinct()
+        .flatMap { id ->
+            // maxres primero y hq720 de respaldo: el "desnudo" suele 404
+            // (mismo motivo que el comentario del CLI en albumdown:550-552).
+            listOf(
+                1280 to "https://i.ytimg.com/vi/$id/maxresdefault.jpg",
+                1280 to "https://i.ytimg.com/vi/$id/hq720.jpg",
+            )
+        }
+    val singles = raws.mapNotNull { r ->
+        r.thumb.takeIf { it.isNotEmpty() && it != "NA" }?.let {
+            // Último recurso: lo que derivó enrichThumbs (YouTube → mqdefault
+            // 320px; SoundCloud → oEmbed t500x500).
+            (if (it.contains("soundcloud.com", true)) 500 else 320) to it
+        }
+    }
+    val coverUrls = (plCands + raws.flatMap { it.cands } + synth + singles)
+        .sortedByDescending { it.first } // estable: en empate gana el playlist
+        .map { it.second }
+        .distinct()
+    return Album(
+        artist, album.ifEmpty { "Unknown Album" }, tracks,
+        coverUrls.firstOrNull().orEmpty(), coverUrls,
+    )
 }
 
 /**

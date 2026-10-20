@@ -367,6 +367,15 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 stringResource(R.string.done_summary, s.ok, s.skipped),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            // Siempre que las letras estaban activas: "♪ 0 con
+                            // letras" es la única señal visible de que LRCLIB
+                            // no respondió (antes: silencio total).
+                            if (s.lyrics >= 0) Text(
+                                stringResource(R.string.done_lyrics, s.lyrics),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (s.lyrics > 0) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             if (s.failed.isNotEmpty()) Text(
                                 stringResource(R.string.failed_prefix, s.failed.take(200)),
                                 style = MaterialTheme.typography.bodySmall,
