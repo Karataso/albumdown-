@@ -12,7 +12,6 @@ import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
-import androidx.work.workDataOf
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.yausername.youtubedl_android.YoutubeDL
@@ -29,6 +28,13 @@ import java.io.File
 // tarda más de los ~10 min que WorkManager permite en fondo.
 
 class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+
+    // Workspace propio de ESTE trabajo. Los nombres fijos en cacheDir
+    // (__art__.jpg, __tmp_1__…) chocaban si corrían dos álbumes: la cola única
+    // ya lo impedía, pero esto ataca la causa de raíz y hace trivial la limpieza.
+    private val workDir: File by lazy {
+        File(applicationContext.cacheDir, "dl-$id").apply { mkdirs() }
+    }
 
     @Volatile
     private var currentProc: String? = null
@@ -49,28 +55,32 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             runDownload()
         } finally {
             killer.cancel()
+            // Todo el temporal de este trabajo, haya salido bien o no: nada de
+            // restos de descargas interrumpidas acumulándose en caché.
+            workDir.deleteRecursively()
         }
     }
 
     private suspend fun runDownload(): Result {
         setForeground(makeForeground())
         ensureInit(applicationContext)
-        // Caché de descargas anteriores interrumpidas: si no, __tmp_* y __fin_* se acumulan.
+        // Basura con el esquema viejo (nombres fijos en cacheDir) de runs
+        // anteriores interrumpidos: si no, __tmp_* y __fin_* se acumulan.
         applicationContext.cacheDir.listFiles { f ->
             f.name.startsWith("__tmp_") || f.name.startsWith("__fin_") ||
                 f.name.startsWith("__art__")
         }?.forEach { it.delete() }
         maybeUpdateYtDlp() // 1 vez por semana, falla en silencio
-        val url = inputData.getString("url").orEmpty()
+        val url = inputData.getString(WorkContract.IN_URL).orEmpty()
         if (url.isEmpty()) return Result.failure()
 
         val album = try {
             resolveAlbum(applicationContext, url)
         } catch (e: DlError) {
             // Un bot check en la lectura no es "link inválido": se dice como tal.
-            return Result.failure(workDataOf("error" to failureUserMessage(e.kind)))
-        } ?: return Result.failure(workDataOf("error" to "No se pudo leer el álbum (¿link válido?)"))
-        if (album.tracks.isEmpty()) return Result.failure(workDataOf("error" to "Sin canciones"))
+            return Result.failure(WorkContract.failure(failureUserMessage(e.kind)))
+        } ?: return Result.failure(WorkContract.failure("No se pudo leer el álbum (¿link válido?)"))
+        if (album.tracks.isEmpty()) return Result.failure(WorkContract.failure("Sin canciones"))
 
         val relPath = "${Environment.DIRECTORY_MUSIC}/AlbumDown/${sanitize(album.artist)}/${sanitize(album.name)}"
         var ok = 0
@@ -78,10 +88,14 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val failed = mutableListOf<String>()
 
         // Selección del usuario (preview): índices originales a bajar; vacío/ausente = todo.
-        val indices = inputData.getString("indices")?.split(",")?.mapNotNull { it.toIntOrNull() }
+        val indices = inputData.getString(WorkContract.IN_INDICES)?.split(",")?.mapNotNull { it.toIntOrNull() }
         val chosen = if (indices.isNullOrEmpty()) album.tracks.withIndex().toList()
         else album.tracks.withIndex().filter { it.index in indices }
-        if (chosen.isEmpty()) return Result.failure(workDataOf("error" to "Sin canciones seleccionadas"))
+        if (chosen.isEmpty()) return Result.failure(WorkContract.failure("Sin canciones seleccionadas"))
+
+        // Progreso inicial: de acá sale el nombre del álbum y el total para la
+        // UI (también si la app murió y vuelve a adjuntarse al trabajo).
+        setProgress(WorkContract.progress(0, chosen.size, "", album.name))
 
         // Portada una vez para todo el álbum (albumdown:591).
         val artFile = downloadBytes(album.coverUrl)?.let { normalizeArt(it) }
@@ -94,7 +108,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             val num = i + 1
             val displayName = "%02d. %s.mp3".format(num, sanitize(t.title))
             val progressLabel = "${processed + 1} de ${chosen.size} · ${t.title}"
-            setProgress(workDataOf("done" to processed, "total" to chosen.size, "label" to t.title))
+            setProgress(WorkContract.progress(processed, chosen.size, t.title, album.name))
             // Notificación con la pista en curso: sin esto la notificación se queda
             // clavada en "Descargando álbum…" durante 10 minutos.
             setForeground(makeForeground(progressLabel))
@@ -133,7 +147,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                     attempt++
                     val label = "⏳ ${failureNote(kind)} — reintento " +
                         "$attempt/${retryTries(kind)} en ${wait}s"
-                    setProgress(workDataOf("done" to processed, "total" to chosen.size, "label" to label))
+                    setProgress(WorkContract.progress(processed, chosen.size, label, album.name))
                     setForeground(makeForeground(label))
                     delay(wait * 1000L)
                 }
@@ -156,8 +170,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         }
 
         artFile?.delete()
-        setProgress(workDataOf("done" to chosen.size, "total" to chosen.size, "label" to ""))
-        return Result.success(workDataOf("ok" to ok, "skipped" to skipped, "failed" to failed.joinToString(" | ")))
+        setProgress(WorkContract.progress(chosen.size, chosen.size, "", album.name))
+        return Result.success(WorkContract.success(ok, skipped, failed))
     }
 
     /**
@@ -167,7 +181,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
      * red, y decide cuánto esperar (albumdown:1008 Failure Handling).
      */
     private suspend fun downloadBestAudio(pageUrl: String, num: Int): File {
-        val out = File(applicationContext.cacheDir, "__tmp_${num}__.%(ext)s")
+        val out = File(workDir, "__tmp_${num}__.%(ext)s")
         val attempts = listOf(
             arrayOf("-f", "bestaudio/best"),
             arrayOf("-f", "bestaudio[protocol=m3u8]/bestaudio/best"),
@@ -190,9 +204,9 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 } finally {
                     currentProc = null
                 }
-                File(applicationContext.cacheDir, "__tmp_${num}__.m4a").takeIf { it.exists() }?.let { return it }
-                File(applicationContext.cacheDir, "__tmp_${num}__.webm").takeIf { it.exists() }?.let { return it }
-                applicationContext.cacheDir.listFiles { f -> f.name.startsWith("__tmp_${num}__.") }
+                File(workDir, "__tmp_${num}__.m4a").takeIf { it.exists() }?.let { return it }
+                File(workDir, "__tmp_${num}__.webm").takeIf { it.exists() }?.let { return it }
+                workDir.listFiles { f -> f.name.startsWith("__tmp_${num}__.") }
                     ?.firstOrNull()?.let { return it }
                 // yt-dlp salió en 0 pero sin archivo: también es un fallo (el de
                 // albumdown confía solo en el archivo en disco, albumdown:1092).
@@ -210,7 +224,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
      * Equivale a embed_metadata + embed_art de albumdown.
      */
     private fun tagMp3(audio: File, art: File?, title: String, artist: String, album: String, num: Int): File? {
-        val out = File(applicationContext.cacheDir, "__fin_${num}__.mp3")
+        val out = File(workDir, "__fin_${num}__.mp3")
         out.delete()
         val cmd = mutableListOf("-y", "-i", audio.absolutePath)
         if (art != null) {
@@ -236,13 +250,13 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     private fun normalizeArt(data: ByteArray): File? {
         val isJpeg = data.size > 2 && data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()
         val isPng = data.size > 8 && data[0] == 0x89.toByte() && data[1] == 0x50.toByte()
-        val f = File(applicationContext.cacheDir, "__art__.jpg")
+        val f = File(workDir, "__art__.jpg")
         return try {
             if (isJpeg || isPng) {
                 f.writeBytes(data)
                 f
             } else {
-                val src = File(applicationContext.cacheDir, "__art__.in").apply { writeBytes(data) }
+                val src = File(workDir, "__art__.in").apply { writeBytes(data) }
                 val s = FFmpegKit.executeWithArguments(arrayOf("-y", "-i", src.absolutePath, "-frames:v", "1", f.absolutePath))
                 src.delete()
                 if (ReturnCode.isSuccess(s.returnCode)) f else null
@@ -264,11 +278,22 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 put(MediaStore.Audio.Media.IS_PENDING, 1)
             }
             val itemUri = resolver.insert(uri, values) ?: return false
-            resolver.openOutputStream(itemUri)?.use { out -> file.inputStream().copyTo(out) }
-            values.clear()
-            values.put(MediaStore.Audio.Media.IS_PENDING, 0)
-            resolver.update(itemUri, values, null, null)
-            true
+            try {
+                val copied = resolver.openOutputStream(itemUri)?.use { out ->
+                    file.inputStream().use { input -> input.copyTo(out) }
+                    true
+                } ?: false
+                if (!copied) throw IllegalStateException("sin stream de salida")
+                values.clear()
+                values.put(MediaStore.Audio.Media.IS_PENDING, 0)
+                resolver.update(itemUri, values, null, null)
+                true
+            } catch (e: Exception) {
+                // Fila IS_PENDING a medias = un archivo que existe pero que ningún
+                // player ni gestor va a mostrar jamás: se borra y se reporta.
+                resolver.delete(itemUri, null, null)
+                false
+            }
         } catch (_: Exception) {
             false
         }
