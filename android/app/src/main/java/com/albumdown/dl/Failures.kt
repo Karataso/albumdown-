@@ -1,8 +1,11 @@
 package com.albumdown.dl
 
+import com.albumdown.R
+
 // Port del "Failure Handling" de albumdown (albumdown:1008-1075) y de los
-// delays de _album_delay (albumdown:1679-1693). Puro: cero imports de Android,
-// corre en `testDebugUnitTest` sin emulador (mismo trato que Media.kt).
+// delays de _album_delay (albumdown:1679-1693). La lógica es pura; el texto
+// para el usuario vive en strings.xml y acá solo queda el mapeo kind→recurso
+// (mismo trato que Media.kt, con el agregado del import de R).
 //
 // YouTube falla de 3 formas muy distintas, y reintentarlas todas igual es la
 // razón de que haya que re-ejecutar el programa a mano:
@@ -73,20 +76,22 @@ fun retryWait(kind: FailureKind, attempt: Int): Int {
     return minOf(p.base.toLong() * exp, p.cap.toLong()).toInt()
 }
 
-/** Nota corta que va junto al título de la pista fallida en la pantalla de resumen. */
-fun failureNote(kind: FailureKind): String = when (kind) {
-    FailureKind.BLOCK -> "bloqueado, reintenta en un rato"
-    FailureKind.GONE -> "no disponible"
-    FailureKind.TRANSIENT -> "se rindió tras reintentos"
+/** Recurso con la nota corta que va junto al título de la pista fallida. */
+fun failureNoteRes(kind: FailureKind): Int = when (kind) {
+    FailureKind.BLOCK -> R.string.fail_note_blocked
+    FailureKind.GONE -> R.string.fail_note_gone
+    FailureKind.TRANSIENT -> R.string.fail_note_transient
 }
 
-// TODO(strings.xml): Phase 1 mueve estas cadenas a recursos — igual que el resto
-// de la UI, que hoy está hardcodeada en los composables.
-/** Mensaje a pantalla completa (UiState.Error / error del worker). */
-fun failureUserMessage(kind: FailureKind): String = when (kind) {
-    FailureKind.BLOCK -> "YouTube está chequeando (403). Espera un rato y reintenta."
-    FailureKind.GONE -> "No está disponible (privado, borrado o no disponible en tu país)."
-    FailureKind.TRANSIENT -> "Falla de red. Reintenta en un momento."
+/**
+ * Recurso con el mensaje a pantalla completa (UiState.Error / error del worker).
+ * El texto vive en strings.xml (en/es) — acá solo queda el mapeo, que es
+ * lógica: un kind siempre cae en el mismo recurso, sin importar el idioma.
+ */
+fun failureUserMessageRes(kind: FailureKind): Int = when (kind) {
+    FailureKind.BLOCK -> R.string.err_blocked
+    FailureKind.GONE -> R.string.err_gone
+    FailureKind.TRANSIENT -> R.string.err_transient
 }
 
 /**

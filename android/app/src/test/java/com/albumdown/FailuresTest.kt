@@ -4,12 +4,13 @@ import com.albumdown.dl.DlError
 import com.albumdown.dl.FailureKind
 import com.albumdown.dl.albumDelay
 import com.albumdown.dl.classifyFailure
-import com.albumdown.dl.failureNote
-import com.albumdown.dl.failureUserMessage
+import com.albumdown.dl.failureNoteRes
+import com.albumdown.dl.failureUserMessageRes
 import com.albumdown.dl.interTrackDelay
 import com.albumdown.dl.retryTries
 import com.albumdown.dl.retryWait
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -91,21 +92,22 @@ class FailuresTest {
         assertEquals(0, retryWait(FailureKind.GONE, 0))
     }
 
-    // ── mensajes ───────────────────────────────────────────────────
+    // ── mensajes (mapeo kind → recurso; el texto vive en strings.xml) ──
 
     @Test
-    fun notes_are_distinct_and_non_empty() {
-        val notes = FailureKind.entries.map(::failureNote)
-        assertTrue(notes.all { it.isNotBlank() })
+    fun notes_map_to_distinct_resources() {
+        val notes = FailureKind.entries.map(::failureNoteRes)
         assertEquals(notes.size, notes.distinct().size)
+        assertTrue(notes.all { it != 0 })
     }
 
     @Test
-    fun user_messages_are_distinct_and_mention_the_cause() {
-        val msgs = FailureKind.entries.map(::failureUserMessage)
-        assertTrue(msgs.all { it.isNotBlank() })
+    fun user_messages_map_to_distinct_resources() {
+        val msgs = FailureKind.entries.map(::failureUserMessageRes)
         assertEquals(msgs.size, msgs.distinct().size)
-        assertTrue(failureUserMessage(FailureKind.BLOCK).contains("403"))
+        assertTrue(msgs.all { it != 0 })
+        // El 403 es el síntoma que el usuario debe ver en el mensaje de block.
+        assertNotEquals(failureUserMessageRes(FailureKind.BLOCK), failureUserMessageRes(FailureKind.GONE))
     }
 
     @Test

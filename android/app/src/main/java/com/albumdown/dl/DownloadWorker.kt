@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import com.albumdown.R
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.yausername.youtubedl_android.YoutubeDL
@@ -74,13 +75,22 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val url = inputData.getString(WorkContract.IN_URL).orEmpty()
         if (url.isEmpty()) return Result.failure()
 
+        // Ajustes capturados al encolar (WorkContract): calidad, --safe, letras,
+        // portada y cookies. Todo lo que el CLI exige por flag.
+        val quality = inputData.getInt(WorkContract.IN_QUALITY, 0).coerceIn(0, 10)
+        val safe = inputData.getBoolean(WorkContract.IN_SAFE, false)
+        val wantLyrics = inputData.getBoolean(WorkContract.IN_LYRICS, true)
+        val wantArt = inputData.getBoolean(WorkContract.IN_ART, true)
+        val cookies = inputData.getString(WorkContract.IN_COOKIES).orEmpty()
+            .takeIf { File(it).exists() }
+
         val album = try {
             resolveAlbum(applicationContext, url)
         } catch (e: DlError) {
             // Un bot check en la lectura no es "link inválido": se dice como tal.
-            return Result.failure(WorkContract.failure(failureUserMessage(e.kind)))
-        } ?: return Result.failure(WorkContract.failure("No se pudo leer el álbum (¿link válido?)"))
-        if (album.tracks.isEmpty()) return Result.failure(WorkContract.failure("Sin canciones"))
+            return Result.failure(WorkContract.failure(applicationContext.getString(failureUserMessageRes(e.kind))))
+        } ?: return Result.failure(WorkContract.failure(applicationContext.getString(R.string.err_no_album)))
+        if (album.tracks.isEmpty()) return Result.failure(WorkContract.failure(applicationContext.getString(R.string.err_no_tracks)))
 
         val relPath = "${Environment.DIRECTORY_MUSIC}/AlbumDown/${sanitize(album.artist)}/${sanitize(album.name)}"
         var ok = 0
@@ -91,14 +101,14 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val indices = inputData.getString(WorkContract.IN_INDICES)?.split(",")?.mapNotNull { it.toIntOrNull() }
         val chosen = if (indices.isNullOrEmpty()) album.tracks.withIndex().toList()
         else album.tracks.withIndex().filter { it.index in indices }
-        if (chosen.isEmpty()) return Result.failure(WorkContract.failure("Sin canciones seleccionadas"))
+        if (chosen.isEmpty()) return Result.failure(WorkContract.failure(applicationContext.getString(R.string.err_no_selection)))
 
         // Progreso inicial: de acá sale el nombre del álbum y el total para la
         // UI (también si la app murió y vuelve a adjuntarse al trabajo).
         setProgress(WorkContract.progress(0, chosen.size, "", album.name))
 
-        // Portada una vez para todo el álbum (albumdown:591).
-        val artFile = downloadBytes(album.coverUrl)?.let { normalizeArt(it) }
+        // Portada una vez para todo el álbum (albumdown:591). --no-art la salta.
+        val artFile = if (wantArt) downloadBytes(album.coverUrl)?.let { normalizeArt(it) } else null
 
         var processed = 0
         // Primera vez que YouTube nos tira un 403 en este run: todo lo que sigue
@@ -107,7 +117,9 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         for ((i, t) in chosen) {
             val num = i + 1
             val displayName = "%02d. %s.mp3".format(num, sanitize(t.title))
-            val progressLabel = "${processed + 1} de ${chosen.size} · ${t.title}"
+            val progressLabel = applicationContext.getString(
+                R.string.notif_progress, processed + 1, chosen.size, t.title,
+            )
             setProgress(WorkContract.progress(processed, chosen.size, t.title, album.name))
             // Notificación con la pista en curso: sin esto la notificación se queda
             // clavada en "Descargando álbum…" durante 10 minutos.
@@ -137,7 +149,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                         kind = FailureKind.GONE
                         break
                     }
-                    audio = downloadBestAudio(source, num)
+                    audio = downloadBestAudio(source, num, safe, cookies)
                     break
                 } catch (e: Exception) {
                     kind = (e as? DlError)?.kind ?: classifyFailure(e.message.orEmpty())
@@ -145,7 +157,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                     if (kind == FailureKind.GONE || attempt >= retryTries(kind)) break
                     val wait = retryWait(kind, attempt)
                     attempt++
-                    val label = "⏳ ${failureNote(kind)} — reintento " +
+                    val label = "⏳ ${note(kind)} — reintento " +
                         "$attempt/${retryTries(kind)} en ${wait}s"
                     setProgress(WorkContract.progress(processed, chosen.size, label, album.name))
                     setForeground(makeForeground(label))
@@ -153,20 +165,35 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 }
             }
             if (audio == null) {
-                failed.add("%02d. %s (%s)".format(num, t.title, failureNote(kind)))
+                failed.add("%02d. %s (%s)".format(num, t.title, note(kind)))
                 processed++
                 continue
             }
-            val tagged = tagMp3(audio, artFile, t.title, t.artist.ifEmpty { album.artist }, album.name, num)
+            // Letras (--lyrics): se buscan antes de taggear para embeberlas en la
+            // misma pasada de ffmpeg. Pausa de cortesía a LRCLIB como en el CLI
+            // (albumdown:927: 2s en safe, 0.5s normal).
+            val lyricsPlain = if (wantLyrics) {
+                val (plain, synced) = lrclibLookup(
+                    t.title, t.artist.ifEmpty { album.artist }, album.name, t.durationSec,
+                )
+                delay(if (safe) 2000 else 500)
+                plain ?: synced?.let { stripSyncedTimestamps(it) }
+            } else null
+
+            val tagged = tagMp3(
+                audio, artFile, t.title, t.artist.ifEmpty { album.artist }, album.name,
+                num, quality, lyricsPlain,
+            )
             audio.delete()
             if (tagged != null && insertToMusic(tagged, relPath, displayName)) ok++ else failed.add(
-                "%02d. %s (%s)".format(num, t.title, failureNote(kind))
+                "%02d. %s (%s)".format(num, t.title, note(kind))
             )
             tagged?.delete()
             processed++
             // Anti-rate-limit (albumdown:1339-1358): 1.5s normal, 10s si YouTube ya
-            // nos cachó un 403 en este run — y nada de esperar tras la última pista.
-            if (processed < chosen.size) delay((interTrackDelay(blockSeen) * 1000).toLong())
+            // nos cachó un 403 en este run, 6-12s al azar en --safe — y nada de
+            // esperar tras la última pista.
+            if (processed < chosen.size) delay((interTrackDelay(blockSeen, safe) * 1000).toLong())
         }
 
         artFile?.delete()
@@ -180,7 +207,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
      * devolver null — así el caller sabe si es un 403, un video borrado o la
      * red, y decide cuánto esperar (albumdown:1008 Failure Handling).
      */
-    private suspend fun downloadBestAudio(pageUrl: String, num: Int): File {
+    private suspend fun downloadBestAudio(pageUrl: String, num: Int, safe: Boolean, cookies: String?): File {
         val out = File(workDir, "__tmp_${num}__.%(ext)s")
         val attempts = listOf(
             arrayOf("-f", "bestaudio/best"),
@@ -189,13 +216,23 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         )
         var last: Exception? = null
         for ((i, fmt) in attempts.withIndex()) {
-            if (i > 0) delay(2000) // delay, no Thread.sleep: no bloquea un hilo y respeta la cancelación
+            // --safe (albumdown:1249-1252): pausas entre requests y antes de cada
+            // descarga, para que la cadencia se vea humana y no de script.
+            if (i > 0) delay(if (safe) 5000 else 2000) // delay, no Thread.sleep: no bloquea un hilo y respeta la cancelación
             try {
                 val req = YoutubeDLRequest(pageUrl)
                 req.addOption("--no-playlist")
                 req.addOption("--quiet")
                 req.addOption("--no-warnings")
                 req.addOption("--retries", "3")
+                req.addOption("--extractor-retries", "3")
+                cookies?.let { req.addOption("--cookies", it) }
+                if (safe) {
+                    req.addOption("--sleep-requests", "3")     // 3s entre metadata requests
+                    req.addOption("--sleep-interval", "5")     // min 5s antes de cada descarga
+                    req.addOption("--max-sleep-interval", "15") // hasta 15s (al azar)
+                    req.addOption("--fragment-retries", "2")   // menos retries = menos requests
+                }
                 fmt.toList().chunked(2).forEach { (k, v) -> req.addOption(k, v) }
                 req.addOption("-o", out.absolutePath)
                 currentProc = "dl$num"
@@ -223,21 +260,35 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
      * Convierte a MP3 + tags + portada en UN comando ffmpeg (0 libs ID3).
      * Equivale a embed_metadata + embed_art de albumdown.
      */
-    private fun tagMp3(audio: File, art: File?, title: String, artist: String, album: String, num: Int): File? {
+    /**
+     * Convierte a MP3 y taggea en una sola pasada. `quality` va 0-10 (como el
+     * --quality del CLI: 0=mejor, 10=peor) y se mapea al -q:a de LAME, que es
+     * 0-9 (VBR, 0 = mejor). `lyrics` se embebe como frame USLT (verificado: con
+     * -id3v2_version 3 ffmpeg lo escribe como USLT real).
+     */
+    private fun tagMp3(
+        audio: File, art: File?, title: String, artist: String, album: String,
+        num: Int, quality: Int, lyrics: String?,
+    ): File? {
         val out = File(workDir, "__fin_${num}__.mp3")
         out.delete()
+        val lameQ = quality.coerceIn(0, 9) // 10 → 9 (el peor que LAME acepta)
         val cmd = mutableListOf("-y", "-i", audio.absolutePath)
         if (art != null) {
             cmd.addAll(listOf("-i", art.absolutePath, "-map", "0:a", "-map", "1", "-c:v", "copy", "-disposition:v", "attached_pic"))
         }
         cmd.addAll(
             listOf(
-                "-c:a", "libmp3lame", "-q:a", "0", "-id3v2_version", "3",
+                "-c:a", "libmp3lame", "-q:a", "$lameQ", "-id3v2_version", "3",
                 "-metadata", "title=$title", "-metadata", "artist=$artist",
                 "-metadata", "album=$album", "-metadata", "track=$num",
-                out.absolutePath
             )
         )
+        if (!lyrics.isNullOrBlank()) {
+            // ffmpeg convierte esta llave en un frame USLT del ID3v2.
+            cmd.addAll(listOf("-metadata", "lyrics=$lyrics"))
+        }
+        cmd.add(out.absolutePath)
         return try {
             val s = FFmpegKit.executeWithArguments(cmd.toTypedArray())
             if (ReturnCode.isSuccess(s.returnCode) && out.exists()) out else null
@@ -311,11 +362,21 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         }
     }
 
-    private fun makeForeground(text: String = "Descargando álbum…"): ForegroundInfo {
+    /** Nota corta de fallo, ya en el idioma activo (el recurso lleva el nº de intentos). */
+    private fun note(kind: FailureKind): String =
+        applicationContext.getString(failureNoteRes(kind), retryTries(kind))
+
+    private fun makeForeground(text: String = applicationContext.getString(R.string.notif_default)): ForegroundInfo {
         val mgr = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
             mgr.createNotificationChannel(
-                NotificationChannel("dl", "Descargas", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(
+                    "dl",
+                    applicationContext.getString(R.string.notif_channel_name),
+                    NotificationManager.IMPORTANCE_LOW,
+                ).apply {
+                    description = applicationContext.getString(R.string.notif_channel_desc)
+                }
             )
         }
         val notif = NotificationCompat.Builder(applicationContext, "dl")

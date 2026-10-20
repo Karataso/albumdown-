@@ -32,7 +32,6 @@ import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -45,7 +44,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -54,31 +52,30 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.albumdown.R
 import com.albumdown.dl.DownloadViewModel
 import com.albumdown.dl.UiState
 import com.albumdown.dl.UrlKind
 import com.albumdown.dl.classifyUrl
 import com.albumdown.dl.formatDuration
-import com.albumdown.dl.updateYtDlp
-import com.albumdown.dl.ytDlpVersion
-import kotlinx.coroutines.launch
 
 // Una sola pantalla: input → preview (con selector) → progreso → resultado.
+// Los ajustes son una pantalla aparte (SettingsScreen), no un diálogo encima.
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -103,6 +100,11 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
     // del trabajo real en vez de quedar en Idle con el Cancel muerto.
     LaunchedEffect(Unit) { vm.attachIfRunning(ctx) }
 
+    if (showSettings) {
+        SettingsScreen(vm = vm, onClose = { showSettings = false })
+        return
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -112,12 +114,12 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(Icons.Rounded.LibraryMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Text("AlbumDown", fontWeight = FontWeight.SemiBold)
+                        Text(stringResource(R.string.app_name), fontWeight = FontWeight.SemiBold)
                     }
                 },
                 actions = {
                     IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Rounded.Settings, contentDescription = "Ajustes")
+                        Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.settings_cd))
                     }
                 },
             )
@@ -129,23 +131,23 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
         ) {
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
-                label = { Text("Link de YouTube, SoundCloud o Spotify") },
+                label = { Text(stringResource(R.string.url_label)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
                 trailingIcon = {
                     if (url.isNotEmpty()) IconButton(onClick = { url = "" }) {
-                        Icon(Icons.Rounded.Clear, contentDescription = "Borrar")
+                        Icon(Icons.Rounded.Clear, contentDescription = stringResource(R.string.clear_cd))
                     }
                 },
             )
             if (url.isNotBlank()) Text(
                 when (kind) {
-                    UrlKind.YOUTUBE -> "▶ YouTube detectado"
-                    UrlKind.SOUNDCLOUD -> "☁ SoundCloud / audio detectado"
-                    UrlKind.SPOTIFY -> "🟢 Spotify detectado (se busca el audio en YouTube)"
-                    UrlKind.UNSUPPORTED -> "✖ Link no soportado"
+                    UrlKind.YOUTUBE -> stringResource(R.string.kind_youtube)
+                    UrlKind.SOUNDCLOUD -> stringResource(R.string.kind_soundcloud)
+                    UrlKind.SPOTIFY -> stringResource(R.string.kind_spotify)
+                    UrlKind.UNSUPPORTED -> stringResource(R.string.kind_unsupported)
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (kind == UrlKind.UNSUPPORTED)
@@ -161,7 +163,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                 ) {
                     Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Buscar álbum")
+                    Text(stringResource(R.string.search_album))
                 }
 
                 is UiState.Resolving -> Row(
@@ -169,7 +171,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Text("Leyendo álbum…")
+                    Text(stringResource(R.string.reading_album))
                 }
 
                 is UiState.Preview -> {
@@ -212,10 +214,9 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                         maxLines = 2, overflow = TextOverflow.Ellipsis,
                                     )
                                     val totalDur = a.tracks.sumOf { it.durationSec }
+                                    val count = pluralStringResource(R.plurals.track_count, a.tracks.size, a.tracks.size)
                                     Text(
-                                        "${a.tracks.size} " +
-                                            (if (a.tracks.size == 1) "canción" else "canciones") +
-                                            if (totalDur > 0) " • ${formatDuration(totalDur)}" else "",
+                                        count + if (totalDur > 0) " • ${formatDuration(totalDur)}" else "",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary,
                                     )
@@ -226,11 +227,20 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text("Seleccionadas: $nSel de ${a.tracks.size}", style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    stringResource(R.string.selected_of, nSel, a.tracks.size),
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
                                 TextButton(onClick = {
                                     val all = nSel == a.tracks.size
                                     vm.selectAll(!all)
-                                }) { Text(if (nSel == a.tracks.size) "Ninguna" else "Todas") }
+                                }) {
+                                    Text(
+                                        stringResource(
+                                            if (nSel == a.tracks.size) R.string.none else R.string.all,
+                                        ),
+                                    )
+                                }
                             }
                             LazyColumn(Modifier.weight(1f)) {
                                 itemsIndexed(a.tracks) { i, t ->
@@ -289,7 +299,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                             onClick = { vm.reset() },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(16.dp),
-                        ) { Text("Atrás") }
+                        ) { Text(stringResource(R.string.back)) }
                         Button(
                             onClick = { vm.download(ctx) },
                             modifier = Modifier.weight(2f),
@@ -298,7 +308,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                         ) {
                             Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Descargar $nSel MP3")
+                            Text(stringResource(R.string.download_n_mp3, nSel))
                         }
                     }
                 }
@@ -317,7 +327,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        s.label.ifBlank { "Preparando…" },
+                                        s.label.ifBlank { stringResource(R.string.preparing) },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -328,17 +338,16 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 progress = { if (s.total > 0) s.done.toFloat() / s.total else 0f },
                                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)),
                             )
-                            Text(
-                                "${s.done} de ${s.total}" + if (s.total > 0) "  (${s.done * 100 / s.total}%)" else "",
-                                style = MaterialTheme.typography.labelMedium,
-                            )
+                            val base = stringResource(R.string.progress_of, s.done, s.total)
+                            val pct = if (s.total > 0) "  (${stringResource(R.string.percent, s.done * 100 / s.total)})" else ""
+                            Text(base + pct, style = MaterialTheme.typography.labelMedium)
                         }
                     }
                     OutlinedButton(
                         onClick = { vm.cancel(ctx) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
-                    ) { Text("Cancelar") }
+                    ) { Text(stringResource(R.string.cancel)) }
                 }
 
                 is UiState.Done -> {
@@ -353,10 +362,13 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 modifier = Modifier.size(46.dp),
                                 tint = MaterialTheme.colorScheme.primary,
                             )
-                            Text("¡Listo!", style = MaterialTheme.typography.titleMedium)
-                            Text("${s.ok} descargadas • ${s.skipped} ya estaban", style = MaterialTheme.typography.bodyMedium)
+                            Text(stringResource(R.string.done_title), style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                stringResource(R.string.done_summary, s.ok, s.skipped),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
                             if (s.failed.isNotEmpty()) Text(
-                                "Fallaron: ${s.failed.take(200)}",
+                                stringResource(R.string.failed_prefix, s.failed.take(200)),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                                 textAlign = TextAlign.Center,
@@ -371,12 +383,12 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Icon(
-                                    Icons.Rounded.FolderOpen, contentDescription = "Abrir carpeta",
+                                    Icons.Rounded.FolderOpen, contentDescription = stringResource(R.string.open_folder_cd),
                                     modifier = Modifier.size(16.dp),
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                                 Text(
-                                    "Music/AlbumDown/",
+                                    "Music/AlbumDown/", // ruta literal: no se traduce
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
@@ -387,7 +399,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                         onClick = { vm.reset() },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
-                    ) { Text("Otro álbum") }
+                    ) { Text(stringResource(R.string.another_album)) }
                 }
 
                 is UiState.Error -> {
@@ -402,7 +414,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                 modifier = Modifier.size(46.dp),
                                 tint = MaterialTheme.colorScheme.error,
                             )
-                            Text("Error", style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.error_title), style = MaterialTheme.typography.titleMedium)
                             Text(s.msg, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
                         }
                     }
@@ -410,73 +422,11 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                         onClick = { vm.reset() },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
-                    ) { Text("Reintentar") }
+                    ) { Text(stringResource(R.string.retry)) }
                 }
             }
         }
     }
-    if (showSettings) SettingsDialog(
-        vm = vm,
-        onClose = { showSettings = false },
-    )
-}
-
-@Composable
-private fun SettingsDialog(vm: DownloadViewModel, onClose: () -> Unit) {
-    val ctx = LocalContext.current
-    var wifi by remember { mutableStateOf(vm.wifiOnly(ctx)) }
-    var ver by remember { mutableStateOf<String?>(null) }
-    var updating by remember { mutableStateOf(false) }
-    var result by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) { ver = ytDlpVersion(ctx) }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("Ajustes") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Descargar solo con WiFi")
-                    Switch(checked = wifi, onCheckedChange = { wifi = it; vm.setWifiOnly(ctx, it) })
-                }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("yt-dlp: ${ver ?: "…"}", style = MaterialTheme.typography.bodySmall)
-                    TextButton(
-                        enabled = !updating,
-                        onClick = {
-                            updating = true
-                            result = ""
-                            scope.launch {
-                                result = updateYtDlp(ctx)
-                                ver = ytDlpVersion(ctx)
-                                updating = false
-                            }
-                        },
-                    ) {
-                        if (updating) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("Actualizar")
-                        }
-                    }
-                }
-                if (result.isNotEmpty()) Text(
-                    result,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onClose) { Text("Listo") } },
-    )
 }
 
 /**

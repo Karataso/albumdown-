@@ -1,0 +1,91 @@
+<resources>
+    <string name="app_name">AlbumDown</string>
+
+    <!-- Home -->
+    <string name="settings_cd">Settings</string>
+    <string name="open_folder_cd">Open album folder</string>
+    <string name="clear_cd">Clear</string>
+    <string name="url_label">YouTube, SoundCloud or Spotify link</string>
+    <string name="kind_youtube">▶ YouTube detected</string>
+    <string name="kind_soundcloud">☁ SoundCloud / audio detected</string>
+    <string name="kind_spotify">🟢 Spotify detected (audio will be searched on YouTube)</string>
+    <string name="kind_unsupported">✖ Link not supported</string>
+    <string name="search_album">Search album</string>
+    <string name="reading_album">Reading album…</string>
+    <plurals name="track_count">
+        <item quantity="one">%d song</item>
+        <item quantity="other">%d songs</item>
+    </plurals>
+    <string name="selected_of">Selected: %1$d of %2$d</string>
+    <string name="none">None</string>
+    <string name="all">All</string>
+    <string name="back">Back</string>
+    <string name="download_n_mp3">Download %d MP3</string>
+    <string name="preparing">Preparing…</string>
+    <string name="progress_of">%1$d of %2$d</string>
+    <string name="percent">%d%%</string>
+    <string name="cancel">Cancel</string>
+    <string name="done_title">Done!</string>
+    <string name="done_summary">%1$d downloaded • %2$d already there</string>
+    <string name="failed_prefix">Failed: %s</string>
+    <string name="another_album">Another album</string>
+    <string name="error_title">Error</string>
+    <string name="retry">Retry</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="section_general">General</string>
+    <string name="section_downloads">Downloads</string>
+    <string name="section_humanization">Humanization</string>
+    <string name="section_advanced">Advanced</string>
+    <string name="lang_title">Language</string>
+    <string name="lang_system">System</string>
+    <string name="lang_english">English</string>
+    <string name="lang_spanish">Español</string>
+    <string name="wifi_only_title">WiFi only</string>
+    <string name="wifi_only_desc">Only download while connected to WiFi.</string>
+    <string name="skip_preview_title">Download right away</string>
+    <string name="skip_preview_desc">Skip the selection screen and download every track as soon as the link is read.</string>
+    <string name="quality_title">MP3 quality</string>
+    <string name="quality_desc">0 = best audio, 10 = smallest file.</string>
+    <string name="quality_best">Best</string>
+    <string name="quality_worst">Smallest</string>
+    <string name="lyrics_title">Lyrics</string>
+    <string name="lyrics_desc">Fetch lyrics from LRCLIB and embed them in the MP3s.</string>
+    <string name="art_title">Album art</string>
+    <string name="art_desc">Embed the cover image in each MP3.</string>
+    <string name="safe_mode_title">Gentle mode</string>
+    <string name="safe_mode_desc">Adds random pauses between requests so YouTube sees a human, not a bot. Slower, but far less likely to get blocked.</string>
+    <string name="ytdlp_version">yt-dlp: %s</string>
+    <string name="update">Update</string>
+    <string name="done_button">Done</string>
+    <string name="cookies_title">Cookies</string>
+    <string name="cookies_desc">A Netscape cookies.txt for downloads that need a signed-in session (age-restricted or members-only).</string>
+    <string name="cookies_import">Import cookies.txt</string>
+    <string name="cookies_clear">Remove cookies</string>
+    <string name="cookies_state_active">cookies.txt active</string>
+    <string name="cookies_state_none">No cookies imported</string>
+
+    <!-- Worker / notifications -->
+    <string name="notif_channel_name">Downloads</string>
+    <string name="notif_channel_desc">Album download progress</string>
+    <string name="notif_default">Downloading album…</string>
+    <string name="notif_progress">%1$d of %2$d · %3$s</string>
+    <string name="queued">Queued…</string>
+
+    <!-- Errors -->
+    <string name="err_no_album">Couldn’t read the album (is the link valid?)</string>
+    <string name="err_no_tracks">No songs found</string>
+    <string name="err_no_selection">No songs selected</string>
+    <string name="err_generic">Download failed</string>
+    <string name="err_unsupported">Link not supported (YouTube, SoundCloud or Spotify)</string>
+    <string name="err_unexpected">Error: %s</string>
+
+    <!-- Failure classification (see Failures.kt) -->
+    <string name="fail_note_blocked">blocked, retry later</string>
+    <string name="fail_note_gone">unavailable</string>
+    <string name="fail_note_transient">network, tried %1$d times</string>
+    <string name="err_blocked">403: YouTube is asking to confirm you’re not a bot. Wait a while before retrying.</string>
+    <string name="err_gone">The track is gone (private, deleted or region-blocked).</string>
+    <string name="err_transient">Network hiccup after %d attempts.</string>
+</resources>

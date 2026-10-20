@@ -9,6 +9,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.albumdown.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,18 +41,15 @@ class DownloadViewModel : ViewModel() {
     private var lastWorkId: UUID? = null
     private var observeJob: Job? = null // un solo observador: cancela el anterior
 
-    fun wifiOnly(ctx: Context): Boolean =
-        ctx.getSharedPreferences("albumdown", Context.MODE_PRIVATE).getBoolean("wifi_only", true)
-
-    fun setWifiOnly(ctx: Context, v: Boolean) {
-        ctx.getSharedPreferences("albumdown", Context.MODE_PRIVATE).edit().putBoolean("wifi_only", v).apply()
-    }
+    // Los ajustes viven en SettingsRepository (StateFlow): la UI se suscribe y
+    // el worker recibe un snapshot al encolar.
+    fun settings(ctx: Context): SettingsRepository = SettingsRepository.get(ctx)
 
     fun resolve(ctx: Context, url: String) {
         val app = ctx.applicationContext
         val t = url.trim()
         if (classifyUrl(t) == UrlKind.UNSUPPORTED) {
-            _state.value = UiState.Error("Link no soportado (YouTube, SoundCloud o Spotify)")
+            _state.value = UiState.Error(ctx.getString(R.string.err_unsupported))
             return
         }
         _state.value = UiState.Resolving
@@ -59,15 +57,18 @@ class DownloadViewModel : ViewModel() {
             try {
                 val album = resolveAlbum(app, t)
                 if (album == null || album.tracks.isEmpty()) {
-                    _state.value = UiState.Error("No se pudo leer el álbum")
+                    _state.value = UiState.Error(ctx.getString(R.string.err_no_album))
                 } else {
                     _selected.value = List(album.tracks.size) { true } // todo marcado
                     _state.value = UiState.Preview(album, t)
+                    // --no-confirm: baja todo de una sin pasar por la selección.
+                    if (settings(app).skipPreview.value) download(ctx)
                 }
             } catch (e: DlError) {
-                _state.value = UiState.Error(failureUserMessage(e.kind))
+                _state.value = UiState.Error(ctx.getString(failureUserMessageRes(e.kind)))
             } catch (e: Exception) {
-                _state.value = UiState.Error("Error: ${(e.message ?: "desconocido").take(120)}")
+                val detail = (e.message ?: "?").take(120)
+                _state.value = UiState.Error(ctx.getString(R.string.err_unexpected, detail))
             }
         }
     }
@@ -89,14 +90,24 @@ class DownloadViewModel : ViewModel() {
         val indices = _selected.value.indices.filter { _selected.value[it] }
         if (indices.isEmpty()) return
         val app = ctx.applicationContext
+        val s = settings(app)
 
         // ponytail: solo-WiFi por defecto (un álbum con datos duele). Se quita en ⚙.
         val constraints = Constraints.Builder()
-            .setRequiredNetworkType(if (wifiOnly(app)) NetworkType.UNMETERED else NetworkType.CONNECTED)
+            .setRequiredNetworkType(if (s.wifiOnly.value) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
+        // Snapshot de ajustes al encolar: si el usuario cambia algo mientras
+        // baja, la corrida en marcha no cambia de opinión a mitad de camino.
+        val snapshot = SettingsSnapshot(
+            quality = s.quality.value,
+            safe = s.safe.value,
+            lyrics = s.lyrics.value,
+            art = s.art.value,
+            cookiesPath = if (s.hasCookies) s.cookiesFile.absolutePath else "",
+        )
         val req = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setConstraints(constraints)
-            .setInputData(WorkContract.input(preview.url, indices))
+            .setInputData(WorkContract.input(preview.url, indices, snapshot))
             .build()
         lastWorkId = req.id
         // Cola única: dos álbumes a la vez nunca (el worker comparte proceso y
@@ -137,7 +148,7 @@ class DownloadViewModel : ViewModel() {
             lastWorkId = active.id
             val p = active.progress
             _state.value = UiState.Downloading(
-                0, p.getInt(WorkContract.PR_TOTAL, 0), "En cola…",
+                0, p.getInt(WorkContract.PR_TOTAL, 0), ctx.getString(R.string.queued),
                 p.getString(WorkContract.PR_ALBUM).orEmpty(),
             )
             observe(app, active.id)
@@ -161,7 +172,7 @@ class DownloadViewModel : ViewModel() {
                     // Cola (unique work): todavía no arrancó — se muestra como
                     // "en cola" en vez de dejar la pantalla clavada en el preview.
                     WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
-                        _state.value = UiState.Downloading(0, total, "En cola…", albumName)
+                        _state.value = UiState.Downloading(0, total, app.getString(R.string.queued), albumName)
 
                     WorkInfo.State.RUNNING ->
                         _state.value = UiState.Downloading(
@@ -180,7 +191,8 @@ class DownloadViewModel : ViewModel() {
 
                     WorkInfo.State.FAILED ->
                         _state.value = UiState.Error(
-                            info.outputData.getString(WorkContract.OUT_ERROR) ?: "Falló la descarga",
+                            info.outputData.getString(WorkContract.OUT_ERROR)
+                                ?: app.getString(R.string.err_generic),
                         )
 
                     WorkInfo.State.CANCELLED -> _state.value = UiState.Idle
