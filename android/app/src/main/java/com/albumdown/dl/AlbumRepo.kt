@@ -46,18 +46,26 @@ suspend fun ytDlpVersion(ctx: Context): String? = withContext(Dispatchers.IO) {
     }
 }
 
+/** Resultado de actualizar yt-dlp: la UI lo formatea en el idioma activo. */
+sealed interface YtDlpUpdate {
+    data class Updated(val version: String) : YtDlpUpdate
+    data class UpToDate(val version: String) : YtDlpUpdate
+    data class Failed(val detail: String) : YtDlpUpdate
+}
+
 /**
- * Actualiza yt-dlp a la última release y devuelve texto de estado.
+ * Actualiza yt-dlp a la última release.
  * Bloqueante y pesado (baja ~30MB, solo si hay release nueva) → siempre en IO.
  */
-suspend fun updateYtDlp(ctx: Context): String = withContext(Dispatchers.IO) {
+suspend fun updateYtDlp(ctx: Context): YtDlpUpdate = withContext(Dispatchers.IO) {
     try {
         ensureInit(ctx)
         val st = YoutubeDL.getInstance().updateYoutubeDL(ctx.applicationContext)
-        val v = YoutubeDL.getInstance().version(ctx.applicationContext)
-        if (st == YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE) "Ya estaba al día ($v)" else "Actualizado a $v"
+        val v = YoutubeDL.getInstance().version(ctx.applicationContext) ?: "?"
+        if (st == YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE) YtDlpUpdate.UpToDate(v)
+        else YtDlpUpdate.Updated(v)
     } catch (e: Exception) {
-        "Error al actualizar: ${(e.message ?: "desconocido").take(80)}"
+        YtDlpUpdate.Failed((e.message ?: "?").take(80))
     }
 }
 

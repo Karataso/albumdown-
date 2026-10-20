@@ -32,6 +32,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -49,9 +50,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.albumdown.R
 import com.albumdown.dl.DownloadViewModel
+import com.albumdown.dl.YtDlpUpdate
 import com.albumdown.dl.updateYtDlp
 import com.albumdown.dl.ytDlpVersion
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 // Ajustes a pantalla completa, agrupados como los flags del CLI:
 // General (idioma, saltar preview) · Descargas (WiFi, calidad, letras, arte) ·
@@ -81,7 +84,14 @@ fun SettingsScreen(vm: DownloadViewModel, onClose: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item { SectionCard(R.string.section_general) {
-                LanguageRow(s.currentLanguageTag()) { s.setLanguage(it) }
+                // Estado local: getApplicationLocales() no es state de Compose, así
+                // que sin esto el chip no se marca al tocarlo hasta que algo más
+                // recomponga la pantalla.
+                var lang by remember { mutableStateOf(s.currentLanguageTag()) }
+                LanguageRow(lang) {
+                    s.setLanguage(it)
+                    lang = it
+                }
                 SettingSwitch(
                     R.string.skip_preview_title, R.string.skip_preview_desc,
                     s.skipPreview.collectAsState().value, s::setSkipPreview,
@@ -158,10 +168,18 @@ private fun SettingSwitch(
     }
 }
 
-/** Calidad 0-10 como el --quality del CLI, con etiqueta (0 = Mejor). */
+/**
+ * Calidad 0-10 como el --quality del CLI, donde 0 = mejor. El CLI guarda 0=mejor
+ * (herencia de yt-dlp), pero a la barra le queda al revés: barra llena = mejor
+ * calidad, así que se muestra invertida (10 - calidad) y se traduce al guardar.
+ * La etiqueta muestra los kbps reales de LAME en VBR para que el número signifique algo.
+ */
 @Composable
 private fun QualitySlider(value: Int, onChange: (Int) -> Unit) {
-    var slider by remember(value) { mutableFloatStateOf(value.toFloat()) }
+    // LAME -q:a en VBR: bitrates aproximados por nivel (0 = mejor → 9 = peor).
+    val kbps = intArrayOf(245, 225, 190, 175, 165, 130, 115, 100, 85, 65)
+    val quality = value.coerceIn(0, 9)
+    var shown by remember(value) { mutableFloatStateOf((10 - quality).toFloat()) }
     Column {
         Row(
             Modifier.fillMaxWidth(),
@@ -169,10 +187,9 @@ private fun QualitySlider(value: Int, onChange: (Int) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(stringResource(R.string.quality_title), style = MaterialTheme.typography.bodyLarge)
+            // Siempre los kbps reales: "Best"/"Smallest" ya van en los extremos debajo.
             Text(
-                if (slider <= 0.5f) stringResource(R.string.quality_best)
-                else if (slider >= 9.5f) stringResource(R.string.quality_worst)
-                else "${slider.toInt()}",
+                stringResource(R.string.quality_bitrate, kbps[quality]),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -183,12 +200,28 @@ private fun QualitySlider(value: Int, onChange: (Int) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Slider(
-            value = slider,
-            onValueChange = { slider = it },
-            onValueChangeFinished = { onChange(slider.toInt()) },
+            value = shown,
+            onValueChange = { shown = it },
+            // Guarda invertido: derecha (barra llena) = mejor calidad = 0 en el CLI.
+            onValueChangeFinished = { onChange((10 - shown.roundToInt()).coerceIn(0, 10)) },
             valueRange = 0f..10f,
             steps = 8, // 10 posiciones enteras
         )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                stringResource(R.string.quality_worst),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.quality_best),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -222,8 +255,9 @@ private fun AdvancedSection(vm: DownloadViewModel) {
     val scope = rememberCoroutineScope()
     var ver by remember { mutableStateOf<String?>(null) }
     var updating by remember { mutableStateOf(false) }
-    var result by remember { mutableStateOf("") }
+    var update by remember { mutableStateOf<YtDlpUpdate?>(null) }
     var hasCookies by remember { mutableStateOf(s.hasCookies) }
+    var cookieMsg by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) { ver = ytDlpVersion(ctx) }
 
@@ -237,35 +271,59 @@ private fun AdvancedSection(vm: DownloadViewModel) {
                 ctx.contentResolver.openInputStream(uri)?.use { s.importCookies(it) } == true
             }.getOrDefault(false)
             hasCookies = s.hasCookies
-            result = if (ok) ctx.getString(R.string.cookies_state_active) else ""
+            cookieMsg = if (ok) ctx.getString(R.string.cookies_state_active) else ""
         }
     }
 
     SectionCard(R.string.section_advanced) {
+        // Fila de yt-dlp: estado claro (versión + resultado coloreado, no texto suelto).
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                stringResource(R.string.ytdlp_version, ver ?: "…"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                Text(stringResource(R.string.ytdlp_label), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    ver?.let { stringResource(R.string.ytdlp_version, it) } ?: "…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val status: Pair<String, Color>? = when (val r = update) {
+                    null -> null
+                    is YtDlpUpdate.Updated ->
+                        stringResource(R.string.ytdlp_updated, r.version) to MaterialTheme.colorScheme.primary
+                    is YtDlpUpdate.UpToDate ->
+                        stringResource(R.string.ytdlp_uptodate, r.version) to MaterialTheme.colorScheme.onSurfaceVariant
+                    is YtDlpUpdate.Failed ->
+                        stringResource(R.string.ytdlp_update_error, r.detail) to MaterialTheme.colorScheme.error
+                }
+                if (status != null) Text(
+                    status.first,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = status.second,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
             TextButton(
                 enabled = !updating,
                 onClick = {
                     updating = true
-                    result = ""
+                    update = null
                     scope.launch {
-                        result = updateYtDlp(ctx)
+                        update = updateYtDlp(ctx)
                         ver = ytDlpVersion(ctx)
                         updating = false
                     }
                 },
             ) {
-                if (updating) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                else Text(stringResource(R.string.update))
+                if (updating) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.updating))
+                } else {
+                    Text(stringResource(R.string.update))
+                }
             }
         }
 
@@ -295,14 +353,14 @@ private fun AdvancedSection(vm: DownloadViewModel) {
                 if (hasCookies) TextButton(onClick = {
                     s.clearCookies()
                     hasCookies = false
+                    cookieMsg = ""
                 }) { Text(stringResource(R.string.cookies_clear)) }
             }
+            if (cookieMsg.isNotEmpty()) Text(
+                cookieMsg,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
-
-        if (result.isNotEmpty()) Text(
-            result,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }

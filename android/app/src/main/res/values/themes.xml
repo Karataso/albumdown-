@@ -1,3 +1,5 @@
 <resources>
-    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- AppCompat (no Theme.Material del framework): MainActivity es
+         AppCompatActivity y exige un tema AppCompat o revienta al arrancar. -->
+    <style name="AppTheme" parent="@style/Theme.AppCompat.DayNight.NoActionBar" />
 </resources>

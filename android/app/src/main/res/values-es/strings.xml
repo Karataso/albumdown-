@@ -47,17 +47,23 @@
     <string name="skip_preview_title">Descargar de una vez</string>
     <string name="skip_preview_desc">Salta la pantalla de selección y baja todo en cuanto se lee el link.</string>
     <string name="quality_title">Calidad MP3</string>
-    <string name="quality_desc">0 = mejor audio, 10 = archivo más chico.</string>
+    <string name="quality_desc">Mejor audio a la derecha, archivo más chico a la izquierda.</string>
     <string name="quality_best">Mejor</string>
     <string name="quality_worst">Chico</string>
+    <string name="quality_bitrate">≈ %d kbps</string>
     <string name="lyrics_title">Letras</string>
     <string name="lyrics_desc">Busca las letras en LRCLIB y las embebe en los MP3.</string>
     <string name="art_title">Carátula</string>
     <string name="art_desc">Embebe la carátula del álbum en cada MP3.</string>
     <string name="safe_mode_title">Modo cuidadoso</string>
     <string name="safe_mode_desc">Agrega pausas al azar entre peticiones para que YouTube vea a una persona y no a un bot. Más lento, pero te bloquean mucho menos.</string>
-    <string name="ytdlp_version">yt-dlp: %s</string>
+    <string name="ytdlp_label">yt-dlp</string>
+    <string name="ytdlp_version">versión %s</string>
     <string name="update">Actualizar</string>
+    <string name="updating">Actualizando…</string>
+    <string name="ytdlp_updated">Actualizado a %s ✓</string>
+    <string name="ytdlp_uptodate">Ya estaba al día (%s)</string>
+    <string name="ytdlp_update_error">No se pudo actualizar: %s</string>
     <string name="done_button">Listo</string>
     <string name="cookies_title">Cookies</string>
     <string name="cookies_desc">Un cookies.txt en formato Netscape para descargas que necesitan sesión (restringidas por edad o solo miembros).</string>

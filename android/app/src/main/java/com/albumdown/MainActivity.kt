@@ -5,9 +5,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -17,7 +17,12 @@ import com.albumdown.dl.DownloadViewModel
 import com.albumdown.ui.AlbumDownTheme
 import com.albumdown.ui.HomeScreen
 
-class MainActivity : ComponentActivity() {
+/**
+ * AppCompatActivity (no ComponentActivity): AppCompatDelegate.setApplicationLocales
+ * solo aplica a través de un delegate registrado, y solo AppCompatActivity registra
+ * uno. Con ComponentActivity el cambio de idioma se guardaba pero nunca se aplicaba.
+ */
+class MainActivity : AppCompatActivity() {
     private var shared by mutableStateOf<String?>(null)
 
     private val permLauncher = registerForActivityResult(
