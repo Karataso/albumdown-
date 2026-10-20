@@ -397,7 +397,7 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                                 Text(
-                                    "Music/AlbumDown/", // ruta literal: no se traduce
+                                    "Music/", // ruta literal: no se traduce
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
@@ -439,12 +439,13 @@ fun HomeScreen(vm: DownloadViewModel, shared: String? = null) {
 }
 
 /**
- * Abre Music/AlbumDown en el gestor de archivos. DocumentsUI identifica la carpeta
- * por el documentId "primary:<ruta>"; si ningún gestor lo agarra (ROMs chinas sin
+ * Abre Music/ en el gestor de archivos — la raíz con las carpetas de artista,
+ * igual que la salida del CLI. DocumentsUI identifica la carpeta por el
+ * documentId "primary:<ruta>"; si ningún gestor lo agarra (ROMs chinas sin
  * DocumentsUI), fallback al listado de audio del MediaStore.
  */
 private fun openAlbumFolder(ctx: Context) {
-    val rel = "${Environment.DIRECTORY_MUSIC}/AlbumDown"
+    val rel = Environment.DIRECTORY_MUSIC
     val doc = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:$rel")
     val attempts = listOf(
         Intent(Intent.ACTION_VIEW).setDataAndType(doc, "vnd.android.document/directory"),

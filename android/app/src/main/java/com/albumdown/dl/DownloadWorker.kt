@@ -26,7 +26,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 // Un worker por álbum: resuelve (o recibe tracks), descarga, taggea, guarda en
-// Music/AlbumDown/Artista/Álbum vía MediaStore. Foreground obligatorio: un álbum
+// Music/Artista/Álbum — raíz igual que la del CLI (-o por defecto ~/Music) — vía
+// MediaStore. Foreground obligatorio: un álbum
 // tarda más de los ~10 min que WorkManager permite en fondo.
 
 class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
@@ -93,7 +94,18 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         } ?: return Result.failure(WorkContract.failure(applicationContext.getString(R.string.err_no_album)))
         if (album.tracks.isEmpty()) return Result.failure(WorkContract.failure(applicationContext.getString(R.string.err_no_tracks)))
 
-        val relPath = "${Environment.DIRECTORY_MUSIC}/AlbumDown/${sanitize(album.artist)}/${sanitize(album.name)}"
+        // Raíz = Music/ directo, igual que make_output_dir del CLI con su -o
+        // por defecto (~/Music). Antes de decidir la carpeta corre
+        // _merge_artist_folder (albumdown:790-803): si ya existe una carpeta de
+        // este artista con otra grafía (el catálogo de YT cambia mayúsculas entre
+        // álbumes), se adopta LA EXISTENTE — carpeta y tags — o los players parten
+        // al artista en dos. Crea nada: si no hay variantes, manda la de metadata.
+        val musicRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+        val artistName = musicRoot?.listFiles { f -> f.isDirectory }
+            ?.map { it.name }
+            ?.let { artistCaseFrom(it, album.artist) }
+            ?: album.artist
+        val relPath = "${Environment.DIRECTORY_MUSIC}/${sanitize(artistName)}/${sanitize(album.name)}"
         var ok = 0
         var skipped = 0
         val failed = mutableListOf<String>()
@@ -126,6 +138,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         for ((i, t) in chosen) {
             val num = i + 1
             val displayName = "%02d. %s.mp3".format(num, sanitize(t.title))
+            // Tag con la grafía unificada (_rewrite_entry_artist del CLI).
+            val trackArtist = rewriteArtistCase(t.artist.ifEmpty { album.artist }, artistName)
             val progressLabel = applicationContext.getString(
                 R.string.notif_progress, processed + 1, chosen.size, t.title,
             )
@@ -186,7 +200,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             var lyricsSynced: String? = null
             if (wantLyrics) {
                 val (plain, synced) = lrclibLookup(
-                    t.title, t.artist.ifEmpty { album.artist }, album.name, t.durationSec,
+                    t.title, trackArtist, album.name, t.durationSec,
                 )
                 delay(if (safe) 2000 else 500)
                 lyricsSynced = synced
@@ -199,7 +213,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             }
 
             val tagged = tagMp3(
-                audio, artFile, t.title, t.artist.ifEmpty { album.artist }, album.name,
+                audio, artFile, t.title, trackArtist, album.name,
                 num, quality,
             )
             // ffmpeg no sabe USLT (→ TXXX privado que ningún player lee): la

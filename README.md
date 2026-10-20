@@ -4,7 +4,7 @@ Download whole albums as MP3s, on your phone.
 
 Paste a link (or just **Share → AlbumDown** from any app) → preview the
 tracklist → pick the tracks you want → get tagged MP3s with cover art in
-`Music/AlbumDown/Artist/Album/`.
+`Music/Artist/Album/`.
 
 Android app written in Kotlin + Jetpack Compose. It bundles **yt-dlp, Python
 and ffmpeg** on-device, so everything happens locally — no server, no account,
@@ -44,7 +44,7 @@ no ads.
 ## Where your files go
 
 ```
-Music/AlbumDown/
+Music/
 └── Artist Name/
     └── Album Name/
         ├── 01. First Song.mp3

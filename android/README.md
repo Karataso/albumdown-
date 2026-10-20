@@ -1,7 +1,7 @@
 # AlbumDown Android (v0.1)
 
 App open source (GPL-3.0, porque `youtubedl-android` lo exige) fuera de Play Store.
-Pegar link → preview → MP3s en `Music/AlbumDown/Artista/Álbum/`.
+Pegar link → preview → MP3s en `Music/Artista/Álbum/`.
 
 ## Compilar
 

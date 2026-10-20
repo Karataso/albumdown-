@@ -56,6 +56,33 @@ fun sanitize(name: String): String {
     return s.ifEmpty { "Unknown" }
 }
 
+/**
+ * Port de albumdown:_merge_artist_folder (790-803): la grafía de una carpeta de
+ * artista YA existente que caseee, o null si no hay ninguna. El catálogo de
+ * YouTube cambia mayúsculas entre álbumes ("El Cuarteto De Nos" vs "...de Nos");
+ * sin esta adopción, una corrida nueva crea una segunda carpeta y los players
+ * ven DOS artistas. sorted() como el CLI: con dos variantes gana la primera en
+ * orden alfabético. Crea nada — solo devuelve la grafía.
+ */
+fun artistCaseFrom(existingDirs: List<String>, artist: String): String? {
+    val key = artist.lowercase()
+    return existingDirs.sorted().firstOrNull { it.lowercase() == key }
+}
+
+/**
+ * Port de albumdown:_rewrite_entry_artist (620-635): la tag del track adopta la
+ * grafía canónica solo si es una variante de la misma (case-insensitive, por la
+ * cabeza antes de la coma); conserva la cola ", feat. ...". Artistas que no son
+ * variantes no se tocan.
+ */
+fun rewriteArtistCase(entryArtist: String, canonical: String): String {
+    if (entryArtist.isBlank()) return canonical
+    val head = entryArtist.substringBefore(",")
+    return if (head.trim().lowercase() == canonical.lowercase()) {
+        canonical + entryArtist.substring(head.length)
+    } else entryArtist
+}
+
 fun formatDuration(totalSec: Int): String {
     if (totalSec <= 0) return "??:??"
     val h = totalSec / 3600
